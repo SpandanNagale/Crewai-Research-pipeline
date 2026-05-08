@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+outputs/*
+!outputs/.gitkeep
+chroma_db/
+*.log
+.DS_Store

@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Research Pipeline API | Agentic AI</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="logo-container">
+                <div class="logo-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                </div>
+                <h2>NeuroSearch</h2>
+            </div>
+            
+            <div class="input-panel">
+                <h3>New Research Task</h3>
+                <p class="subtitle">Deploy autonomous agents to research any topic globally.</p>
+                
+                <form id="research-form">
+                    <div class="form-group">
+                        <label for="topic">Research Topic</label>
+                        <textarea id="topic" rows="3" placeholder="e.g. The impact of AI on quantum computing in 2025" required></textarea>
+                    </div>
+                    
+                    <div class="form-group checkbox-group">
+                        <input type="checkbox" id="evaluate" name="evaluate">
+                        <label for="evaluate">Enable Scorer Evaluation</label>
+                    </div>
+                    
+                    <button type="submit" id="start-btn" class="primary-btn">
+                        <span class="btn-text">Deploy Agents</span>
+                        <svg class="loader-icon hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="10" stroke-opacity="0.25" />
+                            <path d="M12 2C6.477 2 2 6.477 2 12" stroke-linecap="round" />
+                        </svg>
+                    </button>
+                </form>
+            </div>
+
+            <div class="agent-panel">
+                <h3>Active Agents</h3>
+                <ul class="agent-list">
+                    <li class="agent-item" id="agent-planner">
+                        <div class="status-indicator"></div>
+                        <div class="agent-info">
+                            <span class="agent-name">Planner</span>
+                            <span class="agent-role">Strategic architect</span>
+                        </div>
+                    </li>
+                    <li class="agent-item" id="agent-researcher">
+                        <div class="status-indicator"></div>
+                        <div class="agent-info">
+                            <span class="agent-name">Researcher</span>
+                            <span class="agent-role">Data gatherer</span>
+                        </div>
+                    </li>
+                    <li class="agent-item" id="agent-writer">
+                        <div class="status-indicator"></div>
+                        <div class="agent-info">
+                            <span class="agent-name">Writer</span>
+                            <span class="agent-role">Content synthesizer</span>
+                        </div>
+                    </li>
+                    <li class="agent-item" id="agent-critic">
+                        <div class="status-indicator"></div>
+                        <div class="agent-info">
+                            <span class="agent-name">Critic</span>
+                            <span class="agent-role">Quality assurance</span>
+                        </div>
+                    </li>
+                </ul>
+            </div>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="main-content">
+            <header class="topbar">
+                <h1>Live Agent Surveillance</h1>
+                <div class="status-badge" id="system-status">System Idle</div>
+            </header>
+            
+            <div class="content-wrapper">
+                <div class="console-container">
+                    <div class="console-header">
+                        <div class="window-controls">
+                            <span class="control red"></span>
+                            <span class="control yellow"></span>
+                            <span class="control green"></span>
+                        </div>
+                        <span class="console-title">agent_terminal_v1.0</span>
+                    </div>
+                    <div class="console-body" id="console-output">
+                        <div class="console-line system-msg">Initialize a task to begin monitoring agent output...</div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Modal for final report -->
+    <div class="modal-overlay hidden" id="report-modal">
+        <div class="modal">
+            <div class="modal-header">
+                <h2>Final Research Report</h2>
+                <button class="close-btn" id="close-modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="report-content" id="final-report-content"></div>
+                <div class="eval-content hidden" id="final-eval-content">
+                    <h3>Evaluation Scores</h3>
+                    <pre id="eval-scores-pre"></pre>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Import marked.js for markdown parsing -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="/static/script.js"></script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+crewai>=0.80.0
+crewai-tools>=0.17.0
+langchain-ollama>=0.2.3
+chromadb>=0.5.23
+python-dotenv>=1.0.1
+fastapi>=0.115.6
+uvicorn>=0.32.1
+pydantic>=2.10.4
+langchain-community==0.3.14
+wikipedia==1.4.0
