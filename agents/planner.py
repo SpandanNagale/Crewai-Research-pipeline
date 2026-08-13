@@ -10,7 +10,7 @@ def get_planner() -> Agent:
         role=cfg["role"],
         goal=cfg["goal"],
         backstory=cfg["backstory"],
-        llm=get_llm(),
+        llm=get_llm("planner"),
         verbose=True,
         allow_delegation=False,
     )

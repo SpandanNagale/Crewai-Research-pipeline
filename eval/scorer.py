@@ -1,7 +1,6 @@
 import re
 from dataclasses import dataclass
-from crewai import LLM
-from config.settings import settings
+from llm.provider import get_llm
 
 
 @dataclass
@@ -24,15 +23,13 @@ class EvalResult:
 
 def score_report(report: str, topic: str) -> EvalResult:
     """
-    Use Gemma 4 as a judge to score the research report on 3 dimensions.
+    Use an LLM judge to score the research report on 3 dimensions. Uses the
+    "evaluator" entry in config/agents_config.yaml if present (falls back to
+    the global LLM_PROVIDER/LLM_MODEL), so scoring can run on a different
+    provider/model than the pipeline agents.
     Returns an EvalResult with numeric scores and written feedback.
     """
-    
-    llm = LLM(
-    model=f"ollama/{settings.OLLAMA_MODEL}",
-    base_url=settings.OLLAMA_BASE_URL,
-    temperature=0.0,
-)
+    llm = get_llm("evaluator")
 
 
     prompt = f"""You are a strict academic reviewer. Evaluate the following research report on the topic "{topic}".

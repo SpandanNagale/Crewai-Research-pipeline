@@ -12,7 +12,7 @@ def get_researcher() -> Agent:
         role=cfg["role"],
         goal=cfg["goal"],
         backstory=cfg["backstory"],
-        llm=get_llm(),
+        llm=get_llm("researcher"),
         tools=[get_search_tool(), get_wiki_tool()],
         verbose=True,
         allow_delegation=False,

@@ -9,3 +9,5 @@ outputs/*
 chroma_db/
 *.log
 .DS_Store
+*.db
+research.db

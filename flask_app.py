@@ -8,6 +8,12 @@ from eval.scorer import score_report
 
 app = Flask(__name__)
 
+# Windows consoles often default to a legacy codepage (cp1252) that can't
+# encode characters research reports commonly contain (em dashes, subscripts
+# like the "2" in CO2, etc.), which would otherwise crash a console print.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 class ThreadSafeStdout:
     def __init__(self, original_stdout):
         self.original_stdout = original_stdout

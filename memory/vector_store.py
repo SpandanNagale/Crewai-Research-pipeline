@@ -13,12 +13,13 @@ class ResearchMemory:
     Stores past findings so repeated sub-questions don't trigger redundant searches.
     """
 
-    def __init__(self, collection_name: str = "research_findings"):
+    def __init__(self, collection_name: str = "research_findings", space: str = "cosine"):
         self.client = chromadb.PersistentClient(path=CHROMA_PATH)
         self.ef = embedding_functions.DefaultEmbeddingFunction()
         self.collection = self.client.get_or_create_collection(
             name=collection_name,
             embedding_function=self.ef,
+            metadata={"hnsw:space": space},
         )
 
     def _make_id(self, text: str) -> str:
@@ -56,8 +57,10 @@ class ResearchMemory:
 
     def clear(self) -> None:
         """Wipe all stored findings (useful for fresh research runs)."""
+        space = self.collection.metadata.get("hnsw:space", "cosine") if self.collection.metadata else "cosine"
         self.client.delete_collection(self.collection.name)
         self.collection = self.client.get_or_create_collection(
             name=self.collection.name,
             embedding_function=self.ef,
+            metadata={"hnsw:space": space},
         )
