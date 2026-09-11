@@ -3,6 +3,7 @@ import time
 import openai
 import pytest
 
+from llm import response_cache
 from llm.router_llm import GuardrailRefusalError, RouterLLM
 from observability.bus import EventBus
 from observability.context import clear_run, set_stage, start_run
@@ -217,6 +218,48 @@ def test_fallback_emits_one_llm_attempt_event_per_attempt():
     assert events[0].message == "PROVIDER_RATE_LIMIT"
     assert events[1].resolved_deployment == "openrouter:b"
     assert events[1].message == "ok"
+
+
+def test_classifier_call_is_cached_and_replayed_without_calling_a_second_deployment():
+    EventBus.reset_for_tests()
+    response_cache.reset_for_tests()
+    start_run("run-cache-hit")
+    set_stage("classifier")
+
+    d1 = FakeDeployment("a", ["result-1"])
+    router1 = RouterLLM(model="classifier", deployments=[d1], aliases=["groq"])
+    assert router1.call("same messages") == "result-1"
+
+    d2 = FakeDeployment("a", [])  # would raise IndexError if ever called
+    router2 = RouterLLM(model="classifier", deployments=[d2], aliases=["groq"])
+    assert router2.call("same messages") == "result-1"
+    assert d2.calls == 0
+
+    events = [e for e in _drain("run-cache-hit") if e.event_type == "llm_attempt"]
+    assert events[-1].cache_hit is True
+    clear_run()
+
+
+def test_comparator_call_is_cached_but_a_different_prompt_is_not_a_hit():
+    response_cache.reset_for_tests()
+    d1 = FakeDeployment("a", ["first"])
+    RouterLLM(model="evidence_comparator", deployments=[d1], aliases=["groq"]).call("prompt A")
+
+    d2 = FakeDeployment("a", ["second"])
+    result = RouterLLM(model="evidence_comparator", deployments=[d2], aliases=["groq"]).call("prompt B")
+    assert result == "second"
+    assert d2.calls == 1
+
+
+def test_writer_alias_is_never_cached():
+    response_cache.reset_for_tests()
+    d1 = FakeDeployment("a", ["v1"])
+    RouterLLM(model="writer", deployments=[d1], aliases=["groq"]).call("same messages")
+
+    d2 = FakeDeployment("a", ["v2"])
+    result = RouterLLM(model="writer", deployments=[d2], aliases=["groq"]).call("same messages")
+    assert result == "v2"
+    assert d2.calls == 1
 
 
 def test_missing_aliases_falls_back_to_index_without_crashing():

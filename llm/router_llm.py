@@ -18,6 +18,7 @@ import openai
 from crewai.llm import BaseLLM
 from pydantic import PrivateAttr
 
+from llm import response_cache
 from observability.context import emit_event
 from observability.errors import ErrorCode
 from observability.pricing import estimate_cost
@@ -26,6 +27,11 @@ logger = logging.getLogger(__name__)
 
 _COOLDOWN_SECONDS = 600.0
 _TRANSIENT_RETRY_BACKOFF_SECONDS = 1.0
+
+# Deterministic, low-temperature stages only -- see docs/superpowers's Phase 5
+# scope note: "Do not cache the Writer." A stale cached classification or
+# comparison is a minor precision loss; a stale cached report is a lie.
+_CACHEABLE_ALIASES = frozenset({"classifier", "evidence_comparator"})
 
 _TRANSIENT_EXCEPTIONS = (
     openai.APITimeoutError,
@@ -134,6 +140,22 @@ class RouterLLM(BaseLLM):
         from_agent=None,
         response_model=None,
     ):
+        cache_key = None
+        if self.model in _CACHEABLE_ALIASES:
+            cache_key = response_cache.make_key(self.model, messages)
+            cached = response_cache.get(cache_key)
+            if cached is not None:
+                tokens_saved = None
+                if cached.prompt_tokens is not None or cached.completion_tokens is not None:
+                    tokens_saved = (cached.prompt_tokens or 0) + (cached.completion_tokens or 0)
+                emit_event(
+                    "llm_attempt", model_alias=self.model, resolved_deployment="cache",
+                    attempt=0, latency_ms=0.0, cache_hit=True,
+                    tokens_saved=tokens_saved, cost_avoided_usd=cached.cost_usd,
+                    seconds_saved=cached.latency_ms / 1000, message="cache_hit",
+                )
+                return cached.result
+
         now = time.monotonic()
         order = [
             i for i in range(len(self.deployments))
@@ -208,13 +230,20 @@ class RouterLLM(BaseLLM):
                         _raise_if_refusal(result)
                     usage_after = _safe_usage(deployment)
                     prompt_tok, completion_tok = _usage_delta(usage_before, usage_after)
+                    latency_ms = (time.monotonic() - started) * 1000
+                    cost_usd = estimate_cost(alias, getattr(deployment, "model", ""), prompt_tok, completion_tok)
                     emit_event(
                         "llm_attempt", model_alias=self.model, resolved_deployment=resolved,
-                        attempt=attempt, latency_ms=(time.monotonic() - started) * 1000,
+                        attempt=attempt, latency_ms=latency_ms,
                         prompt_tokens=prompt_tok, completion_tokens=completion_tok,
-                        cost_usd=estimate_cost(alias, getattr(deployment, "model", ""), prompt_tok, completion_tok),
+                        cost_usd=cost_usd,
                         message="ok",
                     )
+                    if cache_key is not None:
+                        response_cache.set(cache_key, response_cache.CachedResponse(
+                            result=result, prompt_tokens=prompt_tok, completion_tokens=completion_tok,
+                            cost_usd=cost_usd, latency_ms=latency_ms,
+                        ))
                     return result
 
         if last_error is not None:
