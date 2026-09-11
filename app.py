@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
@@ -53,6 +54,7 @@ class ResearchResponse(BaseModel):
     report: str
     saved_to: str | None = None
     question_id: int | None = None
+    run_id: str | None = None
     reused: bool = False
     contradictions_count: int = 0
     findings_count: int = 0
@@ -69,9 +71,9 @@ def health_providers():
     return {"providers": check_provider_health()}
 
 
-def _run_pipeline(topic: str, force_rerun: bool) -> dict:
+def _run_pipeline(topic: str, force_rerun: bool, run_id: str | None = None) -> dict:
     crew = ResearchCrew()
-    return crew.run_with_meta(topic, force_rerun=force_rerun)
+    return crew.run_with_meta(topic, force_rerun=force_rerun, run_id=run_id)
 
 
 @app.post("/research", response_model=ResearchResponse)
@@ -85,9 +87,10 @@ async def run_research(req: ResearchRequest):
     if not req.topic.strip():
         raise HTTPException(status_code=400, detail="Topic cannot be empty.")
 
+    run_id = str(uuid.uuid4())
     loop = asyncio.get_event_loop()
     try:
-        result = await loop.run_in_executor(None, _run_pipeline, req.topic, req.force_rerun)
+        result = await loop.run_in_executor(None, _run_pipeline, req.topic, req.force_rerun, run_id)
     except PipelineStageError as e:
         raise HTTPException(status_code=502, detail=f"Pipeline stage '{e.stage}' failed: {e.detail}")
     except Exception as e:
@@ -98,6 +101,7 @@ async def run_research(req: ResearchRequest):
         report=result["report"],
         saved_to=result.get("saved_to"),
         question_id=result.get("question_id"),
+        run_id=result.get("run_id", run_id),
         reused=result.get("reused", False),
         contradictions_count=result.get("contradictions_count", 0),
         findings_count=result.get("findings_count", 0),
@@ -116,8 +120,9 @@ async def run_research_async(req: ResearchRequest):
     if not req.topic.strip():
         raise HTTPException(status_code=400, detail="Topic cannot be empty.")
 
-    job_id = job_manager.submit(_run_pipeline, req.topic, req.force_rerun)
-    return {"job_id": job_id, "status": "pending"}
+    run_id = str(uuid.uuid4())
+    job_manager.submit(_run_pipeline, req.topic, req.force_rerun, run_id, job_id=run_id)
+    return {"job_id": run_id, "status": "pending"}
 
 
 @app.get("/jobs/{job_id}")
@@ -126,6 +131,45 @@ def get_job(job_id: str):
     if job is None:
         raise HTTPException(status_code=404, detail="Unknown job_id.")
     return job
+
+
+@app.get("/research/{run_id}")
+def get_run(run_id: str):
+    """Node-state view of one run, for polling without SSE."""
+    run = repository.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Unknown run_id.")
+    return {**run, "stages": repository.get_stage_states(run_id)}
+
+
+@app.post("/research/{run_id}/resume", response_model=ResearchResponse)
+async def resume_research(run_id: str):
+    """Re-enters the pipeline at the first non-succeeded stage of a prior run."""
+    run = repository.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Unknown run_id.")
+    if run["status"] == "succeeded":
+        raise HTTPException(status_code=409, detail="Run already succeeded; nothing to resume.")
+
+    crew = ResearchCrew()
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(
+            None, crew.run_with_meta, run["topic"], False, run_id, run["question_id"]
+        )
+    except PipelineStageError as e:
+        raise HTTPException(status_code=502, detail=f"Pipeline stage '{e.stage}' failed: {e.detail}")
+
+    return ResearchResponse(
+        topic=run["topic"],
+        report=result["report"],
+        saved_to=result.get("saved_to"),
+        question_id=result.get("question_id"),
+        run_id=result.get("run_id", run_id),
+        reused=result.get("reused", False),
+        contradictions_count=result.get("contradictions_count", 0),
+        findings_count=result.get("findings_count", 0),
+    )
 
 
 @app.post("/research/stream")

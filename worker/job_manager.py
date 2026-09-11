@@ -25,9 +25,14 @@ _jobs: dict = {}
 _lock = threading.Lock()
 
 
-def submit(fn: Callable[..., Any], *args, **kwargs) -> str:
-    """Submit fn(*args, **kwargs) to run in the background. Returns a job_id."""
-    job_id = str(uuid.uuid4())
+def submit(fn: Callable[..., Any], *args, job_id: Optional[str] = None, **kwargs) -> str:
+    """
+    Submit fn(*args, **kwargs) to run in the background. Returns a job_id --
+    the caller's own job_id when given (e.g. the pipeline's run_id, so
+    GET /jobs/{job_id} and GET /research/{run_id} address the same run), or a
+    freshly generated one otherwise.
+    """
+    job_id = job_id or str(uuid.uuid4())
     with _lock:
         _jobs[job_id] = {"status": "pending", "result": None, "error": None}
 
