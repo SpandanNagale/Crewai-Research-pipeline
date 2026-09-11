@@ -1,8 +1,11 @@
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
 from crew.research_crew import PipelineStageError, ResearchCrew
@@ -14,17 +17,28 @@ from worker import job_manager
 
 logging.basicConfig(level=logging.INFO)
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+
 app = FastAPI(
     title="Enterprise Research Pipeline API",
     description="Multi-agent research pipeline powered by Gemma 4 + CrewAI, with a "
     "structured traceability DB, contradiction detection, and knowledge reuse.",
     version="2.0.0",
+    lifespan=lifespan,
 )
 
+app.mount("/static", StaticFiles(directory="static"), name="static")
+templates = Jinja2Templates(directory="templates")
 
-@app.on_event("startup")
-def _startup():
-    init_db()
+
+@app.get("/")
+def index(request: Request):
+    return templates.TemplateResponse(request, "index.html")
 
 
 class ResearchRequest(BaseModel):
@@ -118,7 +132,7 @@ async def stream_research(req: ResearchRequest):
         raise HTTPException(status_code=400, detail="Topic cannot be empty.")
 
     async def event_generator():
-        yield f"data: Starting research pipeline for: {req.topic}\n\n"
+        yield f"data: --- STARTING RESEARCH PIPELINE FOR: {req.topic} ---\n\n"
         await asyncio.sleep(0.1)
 
         loop = asyncio.get_event_loop()
@@ -126,6 +140,7 @@ async def stream_research(req: ResearchRequest):
         try:
             result = await loop.run_in_executor(None, _run_pipeline, req.topic, req.force_rerun)
             report = result["report"]
+            yield "data: \n\ndata: --- FINAL REPORT ---\n\n"
             for chunk in report.split("\n"):
                 yield f"data: {chunk}\n\n"
                 await asyncio.sleep(0.01)
@@ -145,10 +160,15 @@ async def stream_research(req: ResearchRequest):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
+class EvalRequest(BaseModel):
+    topic: str
+    report: str
+
+
 @app.post("/eval")
-def evaluate_report(topic: str, report: str):
+def evaluate_report(req: EvalRequest):
     """Score an existing report without re-running the pipeline."""
-    result = score_report(report, topic)
+    result = score_report(req.report, req.topic)
     return {
         "citation_score": result.citation_score,
         "coverage_score": result.coverage_score,
