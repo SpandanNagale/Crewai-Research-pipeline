@@ -1,11 +1,11 @@
 """
 LLM provider abstraction.
 
-CrewAI agents get their LLM instance from get_llm(agent_name) instead of
-constructing crewai.LLM directly. The provider (ollama_local / ollama_cloud /
-groq), model, and temperature are resolved from config/agents_config.yaml
-per-agent overrides, falling back to the global LLM_PROVIDER / LLM_MODEL in
-.env.
+CrewAI agents get their LLM instance from get_llm(agent_name), which builds a
+RouterLLM (llm/router_llm.py) wrapping the ordered list of deployments for
+that agent-name alias, as configured in config/agents_config.yaml's
+model_groups section (built by llm/router.py). Each deployment is a
+crewai.LLM built by one of the provider classes below.
 
 Implementation note: this installation does not depend on litellm. crewai
 1.14+ ships native provider clients and routes "ollama"/"openai" through its
@@ -21,11 +21,9 @@ from __future__ import annotations
 
 import logging
 import os
-import threading
 from abc import ABC, abstractmethod
 from typing import Optional
 
-import yaml
 from crewai import LLM
 
 from config.settings import settings
@@ -147,49 +145,19 @@ _PROVIDERS = {
     "gemini": GeminiProvider(),
 }
 
-_agent_overrides_lock = threading.Lock()
-_agent_overrides_cache: Optional[dict] = None
-
-
-def _load_agent_overrides() -> dict:
-    global _agent_overrides_cache
-    with _agent_overrides_lock:
-        if _agent_overrides_cache is None:
-            try:
-                with open("config/agents_config.yaml") as f:
-                    _agent_overrides_cache = yaml.safe_load(f) or {}
-            except FileNotFoundError:
-                _agent_overrides_cache = {}
-        return _agent_overrides_cache
-
 
 def get_llm(agent_name: Optional[str] = None) -> LLM:
     """
     Build the LLM for a given agent name (a top-level key in
-    config/agents_config.yaml, e.g. "writer", "classifier"). Falls back to
-    the global LLM_PROVIDER / LLM_MODEL / OLLAMA_TEMPERATURE from .env when
-    the agent has no override, or when agent_name is None.
+    config/agents_config.yaml's model_groups section, e.g. "writer",
+    "classifier"). Returns a RouterLLM wrapping that alias's ordered
+    deployment list, so calls get conditional fallback across providers.
     """
-    provider_name = settings.LLM_PROVIDER
-    model = settings.LLM_MODEL
-    temperature = settings.OLLAMA_TEMPERATURE
+    if not agent_name:
+        raise LLMConfigError("get_llm() requires a non-empty agent_name.")
 
-    if agent_name:
-        cfg = _load_agent_overrides().get(agent_name, {}) or {}
-        provider_name = cfg.get("llm_provider", provider_name)
-        model = cfg.get("llm_model", model)
-        temperature = cfg.get("llm_temperature", temperature)
+    from llm.router import get_deployments
+    from llm.router_llm import RouterLLM
 
-    provider = _PROVIDERS.get(provider_name)
-    if provider is None:
-        supported = ", ".join(_PROVIDERS.keys())
-        raise LLMConfigError(
-            f"Unknown LLM_PROVIDER '{provider_name}' (agent={agent_name!r}). "
-            f"Supported: {supported}"
-        )
-
-    try:
-        return provider.build(model, temperature)
-    except LLMConfigError as e:
-        logger.error("LLM configuration error for agent '%s' (provider=%s): %s", agent_name, provider_name, e)
-        raise
+    deployments = get_deployments(agent_name)
+    return RouterLLM(model=agent_name, deployments=deployments)
