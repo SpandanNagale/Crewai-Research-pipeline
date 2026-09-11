@@ -43,61 +43,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const reader = response.body.getReader();
             const decoder = new TextDecoder("utf-8");
-            
-            let isFinalReportPhase = false;
-            let reportMarkdown = [];
-            let evalMarkdown = [];
-            let isEvalPhase = false;
 
+            // Named SSE frames ("event: <type>\ndata: <json>\n\n"), not the old
+            // sentinel-string protocol -- see app.py::stream_research.
+            let buffer = '';
             while (true) {
                 const { value, done } = await reader.read();
                 if (done) break;
-                
-                const chunk = decoder.decode(value, { stream: true });
-                const lines = chunk.split('\n');
-                
-                for (let line of lines) {
-                    if (line.startsWith('data: ')) {
-                        const data = line.slice(6);
-                        
-                        if (data === '[DONE]') {
-                            break;
-                        }
 
-                        if (data === '--- FINAL REPORT ---') {
-                            isFinalReportPhase = true;
-                            appendLog(`[SYSTEM] Research complete. Generating report...`, 'system-msg');
-                            continue;
-                        }
+                buffer += decoder.decode(value, { stream: true });
 
-                        if (data === '--- EVALUATING REPORT ---') {
-                            isEvalPhase = true;
-                            appendLog(`[SYSTEM] Starting critical evaluation of report...`, 'system-msg');
-                            continue;
-                        }
-
-                        if (isFinalReportPhase && !isEvalPhase) {
-                            reportMarkdown.push(data);
-                        } else if (isEvalPhase) {
-                            evalMarkdown.push(data);
-                        } else {
-                            // Console stream during execution
-                            processConsoleLog(data);
-                        }
-                    }
+                let sepIndex;
+                while ((sepIndex = buffer.indexOf('\n\n')) !== -1) {
+                    const rawFrame = buffer.slice(0, sepIndex);
+                    buffer = buffer.slice(sepIndex + 2);
+                    handleSSEFrame(rawFrame);
                 }
-            }
-            
-            // Render final report
-            if (reportMarkdown.length > 0) {
-                const mdContent = reportMarkdown.join('\n');
-                finalReportContent.innerHTML = marked.parse(mdContent);
-                modalOverlay.classList.remove('hidden');
-            }
-
-            if (isEvalPhase && evalMarkdown.length > 0) {
-                finalEvalContent.classList.remove('hidden');
-                evalScoresPre.textContent = evalMarkdown.join('\n').trim();
             }
 
         } catch (error) {
@@ -134,34 +95,57 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!text.trim()) return;
         const line = document.createElement('div');
         line.className = `console-line ${className}`;
-        line.innerHTML = text; // Used innerHTML because some processConsoleLog returns bold tags
+        line.innerHTML = text; // innerHTML: labels can carry simple markup
         consoleOutput.appendChild(line);
         consoleOutput.scrollTop = consoleOutput.scrollHeight;
     }
 
-    function processConsoleLog(data) {
-        if (!data.trim()) return;
-        
-        let formattedStr = escapeHTML(data);
-        let className = 'log-thought';
-        
-        // CrewAI Specific Parsing
-        const lowerData = data.toLowerCase();
-        
-        // Detect which agent is acting to update UI highlighting
-        if (lowerData.includes('planner:')) { setActiveAgent('agent-planner'); className = 'log-planner log-header'; }
-        else if (lowerData.includes('researcher:')) { setActiveAgent('agent-researcher'); className = 'log-researcher log-header'; }
-        else if (lowerData.includes('writer:')) { setActiveAgent('agent-writer'); className = 'log-writer log-header'; }
-        else if (lowerData.includes('critic:')) { setActiveAgent('agent-critic'); className = 'log-critic log-header'; }
-        else if (lowerData.includes('[0m')) {
-            // Strip ANSI codes if any exist
-            formattedStr = formattedStr.replace(/\[\d+m/g, "");
-            // Heuristic coloring
-            if (lowerData.includes('action:')) className = 'log-action';
-            if (lowerData.includes('observation:')) className = 'log-observation';
+    function handleSSEFrame(rawFrame) {
+        let eventType = 'message';
+        const dataLines = [];
+        for (const line of rawFrame.split('\n')) {
+            if (line.startsWith('event: ')) eventType = line.slice(7).trim();
+            else if (line.startsWith('data: ')) dataLines.push(line.slice(6));
+            // lines starting with ':' are heartbeat comments -- ignore
+        }
+        if (dataLines.length === 0) return;
+
+        let payload;
+        try {
+            payload = JSON.parse(dataLines.join('\n'));
+        } catch (e) {
+            return;
         }
 
-        appendLog(formattedStr, className);
+        if (eventType === 'stage_update') {
+            renderStageUpdate(payload);
+        } else if (eventType === 'error') {
+            appendLog(`[SYSTEM ERROR] ${escapeHTML(payload.detail || 'Pipeline error')}`, 'system-msg control red');
+        } else if (eventType === 'done') {
+            if (payload.report) {
+                finalReportContent.innerHTML = marked.parse(payload.report);
+                modalOverlay.classList.remove('hidden');
+            }
+            if (payload.eval) {
+                finalEvalContent.classList.remove('hidden');
+                evalScoresPre.textContent = JSON.stringify(payload.eval, null, 2);
+            }
+        }
+    }
+
+    function renderStageUpdate(event) {
+        const stage = event.stage || '';
+        if (stage.includes('planner')) setActiveAgent('agent-planner');
+        else if (stage.includes('researcher')) setActiveAgent('agent-researcher');
+        else if (stage.includes('writer')) setActiveAgent('agent-writer');
+        else if (stage.includes('critic')) setActiveAgent('agent-critic');
+
+        let className = 'log-thought';
+        if (event.event_type === 'stage_failed') className = 'system-msg control red';
+        else if (event.event_type === 'stage_started' || event.event_type === 'stage_finished') className = 'system-msg';
+
+        const label = `[${stage || 'system'}] ${event.event_type}` + (event.message ? `: ${event.message}` : '');
+        appendLog(escapeHTML(label), className);
     }
 
     function setActiveAgent(agentId) {

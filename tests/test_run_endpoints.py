@@ -109,3 +109,48 @@ def test_async_job_id_matches_the_pipelines_run_id(monkeypatch):
             time.sleep(0.05)
 
     assert seen_run_ids == [job_id]
+
+
+def test_stream_emits_named_sse_events_with_no_sentinel_strings(monkeypatch):
+    from observability.context import clear_run, emit_event, set_stage, start_run
+
+    def fake_pipeline(topic, force_rerun, run_id):
+        start_run(run_id)
+        set_stage("planner")
+        emit_event("stage_started")
+        emit_event("stage_finished")
+        clear_run()
+        return {
+            "report": "# hi", "run_id": run_id, "question_id": 1, "reused": False,
+            "saved_to": None, "contradictions_count": 0, "findings_count": 0,
+        }
+
+    monkeypatch.setattr("app._run_pipeline", fake_pipeline)
+
+    with TestClient(app_module.app) as client:
+        with client.stream("POST", "/research/stream", json={"topic": "t"}) as response:
+            body = "".join(response.iter_text())
+
+    assert "event: stage_update" in body
+    assert "event: done" in body
+    assert '"event_type": "run_started"' in body
+    assert '"event_type": "stage_started"' in body
+    assert "--- FINAL REPORT ---" not in body
+    assert "[DONE]" not in body
+
+
+def test_stream_returns_error_event_on_pipeline_stage_error(monkeypatch):
+    from crew.research_crew import PipelineStageError
+    from observability.errors import ErrorCode
+
+    def failing_pipeline(topic, force_rerun, run_id):
+        raise PipelineStageError("planner", "boom", ErrorCode.PROVIDER_UNAVAILABLE)
+
+    monkeypatch.setattr("app._run_pipeline", failing_pipeline)
+
+    with TestClient(app_module.app) as client:
+        with client.stream("POST", "/research/stream", json={"topic": "t"}) as response:
+            body = "".join(response.iter_text())
+
+    assert "event: error" in body
+    assert "PROVIDER_UNAVAILABLE" in body

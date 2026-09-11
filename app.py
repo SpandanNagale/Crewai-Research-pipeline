@@ -1,5 +1,8 @@
 import asyncio
+import json
 import logging
+import queue
+import time
 import uuid
 from contextlib import asynccontextmanager
 
@@ -15,7 +18,14 @@ from db.session import init_db
 from eval.scorer import score_report
 from llm.router import check_provider_health
 from memory.reuse import KnowledgeReuseChecker
+from observability.bus import EventBus
 from worker import job_manager
+
+_SSE_HEARTBEAT_SECONDS = 15.0
+
+
+def _sse(event_type: str, data: dict) -> str:
+    return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
 logging.basicConfig(level=logging.INFO)
 
@@ -173,40 +183,85 @@ async def resume_research(run_id: str):
 
 
 @app.post("/research/stream")
-async def stream_research(req: ResearchRequest):
+async def stream_research(req: ResearchRequest, request: Request):
     """
-    Stream the research report token-by-token as it is generated.
-    Uses Server-Sent Events (SSE) format. Writes to the traceability DB
-    during execution, same as /research.
+    Streams RunEvents live as the pipeline executes, via the same EventBus
+    the rest of the pipeline emits to (see observability/bus.py). Named SSE
+    event types: stage_update (every RunEvent), error, done. No sentinel
+    strings in the data payload -- each is a JSON object.
     """
     if not req.topic.strip():
         raise HTTPException(status_code=400, detail="Topic cannot be empty.")
 
-    async def event_generator():
-        yield f"data: --- STARTING RESEARCH PIPELINE FOR: {req.topic} ---\n\n"
-        await asyncio.sleep(0.1)
+    run_id = str(uuid.uuid4())
 
+    async def event_generator():
         loop = asyncio.get_event_loop()
+        future = loop.run_in_executor(None, _run_pipeline, req.topic, req.force_rerun, run_id)
+        event_queue = EventBus.instance().queue_sink.get_queue(run_id)
+
+        yield _sse("stage_update", {"event_type": "run_started", "run_id": run_id, "stage": ""})
+        last_activity = time.monotonic()
 
         try:
-            result = await loop.run_in_executor(None, _run_pipeline, req.topic, req.force_rerun)
-            report = result["report"]
-            yield "data: \n\ndata: --- FINAL REPORT ---\n\n"
-            for chunk in report.split("\n"):
-                yield f"data: {chunk}\n\n"
-                await asyncio.sleep(0.01)
+            while not future.done():
+                if await request.is_disconnected():
+                    # Best-effort only: a plain ThreadPoolExecutor thread can't be
+                    # force-killed once running. This unblocks the client and
+                    # records the outcome; the background run finishes on its own.
+                    future.cancel()
+                    repository.set_run_status(run_id, "aborted")
+                    return
 
+                try:
+                    event = event_queue.get_nowait()
+                except queue.Empty:
+                    if time.monotonic() - last_activity > _SSE_HEARTBEAT_SECONDS:
+                        yield ": heartbeat\n\n"
+                        last_activity = time.monotonic()
+                    await asyncio.sleep(0.1)
+                    continue
+
+                yield _sse("stage_update", event.model_dump(mode="json", exclude_none=True))
+                last_activity = time.monotonic()
+
+            while True:
+                try:
+                    event = event_queue.get_nowait()
+                except queue.Empty:
+                    break
+                yield _sse("stage_update", event.model_dump(mode="json", exclude_none=True))
+
+            try:
+                result = future.result()
+            except PipelineStageError as e:
+                yield _sse("error", {"stage": e.stage, "detail": e.detail, "error_code": e.error_code.value})
+                return
+            except Exception as e:
+                yield _sse("error", {"detail": str(e)})
+                return
+
+            done_payload = {
+                "run_id": result.get("run_id", run_id),
+                "question_id": result.get("question_id"),
+                "report": result["report"],
+                "saved_to": result.get("saved_to"),
+                "reused": result.get("reused", False),
+                "contradictions_count": result.get("contradictions_count", 0),
+                "findings_count": result.get("findings_count", 0),
+            }
             if req.evaluate:
-                yield "data: \n\ndata: --- EVALUATING REPORT ---\n\n"
-                eval_result = await loop.run_in_executor(None, score_report, report, req.topic)
-                yield f"data: {str(eval_result)}\n\n"
-
-            yield "data: [DONE]\n\n"
-
-        except PipelineStageError as e:
-            yield f"data: ERROR: pipeline stage '{e.stage}' failed: {e.detail}\n\n"
-        except Exception as e:
-            yield f"data: ERROR: {str(e)}\n\n"
+                eval_result = await loop.run_in_executor(None, score_report, result["report"], req.topic)
+                done_payload["eval"] = {
+                    "citation_score": eval_result.citation_score,
+                    "coverage_score": eval_result.coverage_score,
+                    "clarity_score": eval_result.clarity_score,
+                    "total": eval_result.total,
+                    "feedback": eval_result.feedback,
+                }
+            yield _sse("done", done_payload)
+        finally:
+            EventBus.instance().queue_sink.drop(run_id)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
