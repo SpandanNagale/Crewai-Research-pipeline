@@ -551,8 +551,9 @@ git commit -m "feat: add RouterLLM fallback/cooldown/refusal state machine"
 - Test: `tests/test_router.py`
 
 **Interfaces:**
-- Consumes: `llm.provider._PROVIDERS` (Task 1), `llm.provider.LLMConfigError` (existing),
-  `llm.router_llm.RouterLLM` (Task 2).
+- Consumes: `llm.provider._PROVIDERS` (Task 1), `llm.provider.LLMConfigError` (existing).
+  Does NOT consume `llm.router_llm.RouterLLM` (Task 2) — this task only builds plain
+  `crewai.LLM` deployment lists; wrapping them in a `RouterLLM` happens in Task 4.
 - Produces: `llm.router.get_deployments(agent_name: str) -> list[LLM]` (cached per
   agent_name), `llm.router.check_provider_health() -> list[dict]` — each dict
   `{"agent_name": str, "provider": str, "model": str, "status": "ok" | "error", "detail": str}`.
@@ -879,7 +880,7 @@ def test_research_crew_classifies_every_exception_router_llm_can_raise():
     response = httpx.Response(500, request=request)
 
     for exc_type in (*_TRANSIENT_EXCEPTIONS, *_IMMEDIATE_ADVANCE_EXCEPTIONS):
-        if exc_type is openai.APITimeoutError:
+        if exc_type in (openai.APITimeoutError, openai.APIConnectionError):
             instance = exc_type(request=request)
         else:
             instance = exc_type("test", response=response, body=None)
