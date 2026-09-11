@@ -255,6 +255,8 @@ class ResearchCrew:
             repository.set_run_status(run_id, "succeeded")
             emit_event("run_finished")
 
+            sub_questions = stage_outputs.get("sub_questions", [])
+            unresolved = stage_outputs.get("unresolved_sub_questions", [])
             return {
                 "report": report,
                 "question_id": question_id,
@@ -265,6 +267,8 @@ class ResearchCrew:
                 "contradictions_count": len(contradictions),
                 "findings_count": len(findings),
                 "groundedness_score": stage_outputs.get("groundedness_score"),
+                "sub_questions_count": len(sub_questions),
+                "unresolved_sub_questions_count": len(unresolved),
             }
         finally:
             clear_run()
@@ -414,6 +418,10 @@ class ResearchCrew:
             "saved_to": None,
             "contradictions_count": len(match["contradictions"]),
             "findings_count": sum(len(e["findings"]) for e in match["conclusions"]),
+            # A reused answer is treated as fully resolved -- the original run's
+            # per-sub-question outcome isn't tracked in the trace this is built from.
+            "sub_questions_count": len(match["question"].get("sub_questions") or []),
+            "unresolved_sub_questions_count": 0,
         }
 
     def _run_planning_stage(self, topic: str) -> List[str]:

@@ -70,6 +70,8 @@ def test_full_run_marks_every_stage_succeeded(monkeypatch):
     result = crew.run_with_meta("test topic", force_rerun=True, run_id="run-full")
 
     assert result["run_id"] == "run-full"
+    assert result["sub_questions_count"] == 2
+    assert result["unresolved_sub_questions_count"] == 0
     states = {s["stage"]: s["state"] for s in repository.get_stage_states("run-full")}
     assert states == {
         "planner": "succeeded",

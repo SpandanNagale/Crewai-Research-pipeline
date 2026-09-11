@@ -203,6 +203,24 @@ def test_research_response_includes_groundedness_score(monkeypatch):
     assert response.json()["groundedness_score"] == 0.85
 
 
+def test_research_response_includes_subquestion_coverage_counts(monkeypatch):
+    def fake_pipeline(topic, force_rerun, run_id=None):
+        return {
+            "report": "ok", "question_id": 1, "run_id": run_id, "reused": False,
+            "saved_to": None, "contradictions_count": 0, "findings_count": 0,
+            "sub_questions_count": 5, "unresolved_sub_questions_count": 2,
+        }
+
+    monkeypatch.setattr("app._run_pipeline", fake_pipeline)
+
+    with TestClient(app_module.app) as client:
+        response = client.post("/research", json={"topic": "t"})
+
+    body = response.json()
+    assert body["sub_questions_count"] == 5
+    assert body["unresolved_sub_questions_count"] == 2
+
+
 def test_get_groundedness_returns_404_for_unknown_question():
     with TestClient(app_module.app) as client:
         response = client.get("/questions/999/groundedness")

@@ -70,6 +70,8 @@ class ResearchResponse(BaseModel):
     contradictions_count: int = 0
     findings_count: int = 0
     groundedness_score: float | None = None
+    sub_questions_count: int = 0
+    unresolved_sub_questions_count: int = 0
 
 
 def _pipeline_status_code(error_code: ErrorCode) -> int:
@@ -125,6 +127,8 @@ async def run_research(req: ResearchRequest):
         contradictions_count=result.get("contradictions_count", 0),
         findings_count=result.get("findings_count", 0),
         groundedness_score=result.get("groundedness_score"),
+        sub_questions_count=result.get("sub_questions_count", 0),
+        unresolved_sub_questions_count=result.get("unresolved_sub_questions_count", 0),
     )
 
 
@@ -193,6 +197,8 @@ async def resume_research(run_id: str):
         contradictions_count=result.get("contradictions_count", 0),
         findings_count=result.get("findings_count", 0),
         groundedness_score=result.get("groundedness_score"),
+        sub_questions_count=result.get("sub_questions_count", 0),
+        unresolved_sub_questions_count=result.get("unresolved_sub_questions_count", 0),
     )
 
 
@@ -264,6 +270,8 @@ async def stream_research(req: ResearchRequest, request: Request):
                 "contradictions_count": result.get("contradictions_count", 0),
                 "findings_count": result.get("findings_count", 0),
                 "groundedness_score": result.get("groundedness_score"),
+                "sub_questions_count": result.get("sub_questions_count", 0),
+                "unresolved_sub_questions_count": result.get("unresolved_sub_questions_count", 0),
             }
             if req.evaluate:
                 eval_result = await loop.run_in_executor(None, score_report, result["report"], req.topic)
