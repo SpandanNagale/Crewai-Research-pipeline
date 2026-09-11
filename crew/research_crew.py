@@ -47,6 +47,7 @@ _PROVIDER_UNAVAILABLE_EXCEPTIONS = (
     openai.APITimeoutError,
     openai.APIConnectionError,
     openai.NotFoundError,
+    openai.InternalServerError,
 )
 
 
