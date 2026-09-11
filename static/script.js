@@ -15,6 +15,20 @@ document.addEventListener('DOMContentLoaded', () => {
     const finalReportContent = document.getElementById('final-report-content');
     const finalEvalContent = document.getElementById('final-eval-content');
     const evalScoresPre = document.getElementById('eval-scores-pre');
+    const cacheSavingsBadge = document.getElementById('cache-savings');
+
+    let cacheSavings = { costUsd: 0, tokens: 0, seconds: 0 };
+
+    function resetCacheSavings() {
+        cacheSavings = { costUsd: 0, tokens: 0, seconds: 0 };
+        cacheSavingsBadge.classList.add('hidden');
+        renderCacheSavings();
+    }
+
+    function renderCacheSavings() {
+        cacheSavingsBadge.textContent =
+            `Cache savings: $${cacheSavings.costUsd.toFixed(4)} · ${cacheSavings.tokens} tokens · ${cacheSavings.seconds.toFixed(1)}s`;
+    }
 
     form.addEventListener('submit', async (e) => {
         e.preventDefault();
@@ -31,7 +45,8 @@ document.addEventListener('DOMContentLoaded', () => {
         systemStatus.textContent = "Pipeline Running";
         systemStatus.classList.add('running');
         consoleOutput.innerHTML = ''; // Clear console
-        
+        resetCacheSavings();
+
         appendLog(`[SYSTEM] Initializing task: "${topic}"...`, 'system-msg');
         
         try {
@@ -139,6 +154,14 @@ document.addEventListener('DOMContentLoaded', () => {
         else if (stage.includes('researcher')) setActiveAgent('agent-researcher');
         else if (stage.includes('writer')) setActiveAgent('agent-writer');
         else if (stage.includes('critic')) setActiveAgent('agent-critic');
+
+        if (event.cache_hit) {
+            cacheSavings.costUsd += event.cost_avoided_usd || 0;
+            cacheSavings.tokens += event.tokens_saved || 0;
+            cacheSavings.seconds += event.seconds_saved || 0;
+            cacheSavingsBadge.classList.remove('hidden');
+            renderCacheSavings();
+        }
 
         let className = 'log-thought';
         if (event.event_type === 'stage_failed') className = 'system-msg control red';
