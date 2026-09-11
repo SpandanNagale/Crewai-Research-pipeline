@@ -3,6 +3,7 @@ import logging
 from crewai.tools import tool
 
 from config.settings import settings
+from guardrails.tool_output_guardrail import sanitize_untrusted_text, wrap_untrusted_block
 from tools.providers.base import SearchProvider
 from tools.providers.duckduckgo_provider import DuckDuckGoSearchProvider
 from tools.providers.serper_provider import SerperSearchProvider
@@ -30,9 +31,12 @@ def get_search_provider() -> SearchProvider:
 def _format(results) -> str:
     if not results:
         return "No results found."
-    return "\n\n".join(
-        f"- {r['title']}: {r['snippet']}\n  URL: {r['url']}" for r in results
+    body = "\n\n".join(
+        f"- {sanitize_untrusted_text(r['title'], 'search')}: "
+        f"{sanitize_untrusted_text(r['snippet'], 'search')}\n  URL: {r['url']}"
+        for r in results
     )
+    return wrap_untrusted_block(body, "search results")
 
 
 @tool("Web Search")
