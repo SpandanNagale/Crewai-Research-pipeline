@@ -71,37 +71,37 @@ model_groups:
   planner:
     - {provider: ollama_cloud, model: "gpt-oss:120b-cloud"}
     - {provider: groq, model: "openai/gpt-oss-20b"}
-    - {provider: openrouter, model: "meta-llama/llama-3.3-70b-instruct"}
+    - {provider: openrouter, model: "nvidia/nemotron-3-super-120b-a12b:free"}
     - {provider: gemini, model: "gemini-3.6-flash"}
   researcher:
-    - {provider: groq, model: "openai/gpt-oss-20b"}
+    - {provider: openrouter, model: "nvidia/nemotron-3-super-120b-a12b:free"}
+    - {provider: groq, model: "openai/gpt-oss-120b"}
     - {provider: ollama_cloud, model: "gpt-oss:120b-cloud"}
-    - {provider: openrouter, model: "meta-llama/llama-3.3-70b-instruct"}
     - {provider: gemini, model: "gemini-3.6-flash"}
   evidence_comparator:
     - {provider: ollama_cloud, model: "gpt-oss:120b-cloud"}
     - {provider: groq, model: "openai/gpt-oss-20b"}
-    - {provider: openrouter, model: "meta-llama/llama-3.3-70b-instruct"}
+    - {provider: openrouter, model: "nvidia/nemotron-3-super-120b-a12b:free"}
     - {provider: gemini, model: "gemini-3.6-flash"}
   classifier:
     - {provider: ollama_cloud, model: "gpt-oss:120b-cloud"}
     - {provider: groq, model: "openai/gpt-oss-20b"}
-    - {provider: openrouter, model: "meta-llama/llama-3.3-70b-instruct"}
+    - {provider: openrouter, model: "nvidia/nemotron-3-super-120b-a12b:free"}
     - {provider: gemini, model: "gemini-3.6-flash"}
   writer:
     - {provider: ollama_cloud, model: "gpt-oss:120b-cloud"}
-    - {provider: openrouter, model: "meta-llama/llama-3.3-70b-instruct"}
+    - {provider: openrouter, model: "nvidia/nemotron-3-super-120b-a12b:free"}
     - {provider: gemini, model: "gemini-3.6-flash"}
     - {provider: groq, model: "openai/gpt-oss-20b"}
   critic:
     - {provider: ollama_cloud, model: "gpt-oss:120b-cloud"}
-    - {provider: openrouter, model: "meta-llama/llama-3.3-70b-instruct"}
+    - {provider: openrouter, model: "nvidia/nemotron-3-super-120b-a12b:free"}
     - {provider: gemini, model: "gemini-3.6-flash"}
     - {provider: groq, model: "openai/gpt-oss-20b"}
   evaluator:
     - {provider: ollama_cloud, model: "gpt-oss:120b-cloud"}
     - {provider: groq, model: "openai/gpt-oss-20b"}
-    - {provider: openrouter, model: "meta-llama/llama-3.3-70b-instruct"}
+    - {provider: openrouter, model: "nvidia/nemotron-3-super-120b-a12b:free"}
     - {provider: gemini, model: "gemini-3.6-flash"}
 
 evaluator:

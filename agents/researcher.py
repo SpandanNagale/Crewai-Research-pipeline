@@ -16,5 +16,5 @@ def get_researcher() -> Agent:
         tools=[get_search_tool(), get_wiki_tool()],
         verbose=True,
         allow_delegation=False,
-        max_iter=8,             # prevent infinite tool loops
+        max_iter=15,            # prevent infinite tool loops
     )
