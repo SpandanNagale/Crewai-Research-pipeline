@@ -19,6 +19,7 @@ from eval.scorer import score_report
 from llm.router import check_provider_health
 from memory.reuse import KnowledgeReuseChecker
 from observability.bus import EventBus
+from observability.errors import ErrorCode
 from worker import job_manager
 
 _SSE_HEARTBEAT_SECONDS = 15.0
@@ -68,6 +69,11 @@ class ResearchResponse(BaseModel):
     reused: bool = False
     contradictions_count: int = 0
     findings_count: int = 0
+    groundedness_score: float | None = None
+
+
+def _pipeline_status_code(error_code: ErrorCode) -> int:
+    return 400 if error_code == ErrorCode.GUARDRAIL_BLOCKED else 502
 
 
 @app.get("/health")
@@ -102,7 +108,10 @@ async def run_research(req: ResearchRequest):
     try:
         result = await loop.run_in_executor(None, _run_pipeline, req.topic, req.force_rerun, run_id)
     except PipelineStageError as e:
-        raise HTTPException(status_code=502, detail=f"Pipeline stage '{e.stage}' failed: {e.detail}")
+        raise HTTPException(
+            status_code=_pipeline_status_code(e.error_code),
+            detail=f"Pipeline stage '{e.stage}' failed: {e.detail}",
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Pipeline error: {str(e)}")
 
@@ -115,6 +124,7 @@ async def run_research(req: ResearchRequest):
         reused=result.get("reused", False),
         contradictions_count=result.get("contradictions_count", 0),
         findings_count=result.get("findings_count", 0),
+        groundedness_score=result.get("groundedness_score"),
     )
 
 
@@ -168,7 +178,10 @@ async def resume_research(run_id: str):
             None, crew.run_with_meta, run["topic"], False, run_id, run["question_id"]
         )
     except PipelineStageError as e:
-        raise HTTPException(status_code=502, detail=f"Pipeline stage '{e.stage}' failed: {e.detail}")
+        raise HTTPException(
+            status_code=_pipeline_status_code(e.error_code),
+            detail=f"Pipeline stage '{e.stage}' failed: {e.detail}",
+        )
 
     return ResearchResponse(
         topic=run["topic"],
@@ -179,6 +192,7 @@ async def resume_research(run_id: str):
         reused=result.get("reused", False),
         contradictions_count=result.get("contradictions_count", 0),
         findings_count=result.get("findings_count", 0),
+        groundedness_score=result.get("groundedness_score"),
     )
 
 
@@ -249,6 +263,7 @@ async def stream_research(req: ResearchRequest, request: Request):
                 "reused": result.get("reused", False),
                 "contradictions_count": result.get("contradictions_count", 0),
                 "findings_count": result.get("findings_count", 0),
+                "groundedness_score": result.get("groundedness_score"),
             }
             if req.evaluate:
                 eval_result = await loop.run_in_executor(None, score_report, result["report"], req.topic)
@@ -303,6 +318,15 @@ def get_contradictions(question_id: int):
     if question is None:
         raise HTTPException(status_code=404, detail="Unknown question_id.")
     return {"question_id": question_id, "contradictions": repository.get_contradictions(question_id)}
+
+
+@app.get("/questions/{question_id}/groundedness")
+def get_groundedness(question_id: int):
+    """Per-claim groundedness result from the Critic stage's last check for this question."""
+    question = repository.get_question(question_id)
+    if question is None:
+        raise HTTPException(status_code=404, detail="Unknown question_id.")
+    return {"question_id": question_id, "claims": repository.get_claim_groundings(question_id)}
 
 
 @app.get("/knowledge/search")

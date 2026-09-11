@@ -154,3 +154,71 @@ def test_stream_returns_error_event_on_pipeline_stage_error(monkeypatch):
 
     assert "event: error" in body
     assert "PROVIDER_UNAVAILABLE" in body
+
+
+def test_research_returns_400_for_a_guardrail_blocked_topic(monkeypatch):
+    from crew.research_crew import PipelineStageError
+    from observability.errors import ErrorCode
+
+    def blocked_pipeline(topic, force_rerun, run_id=None):
+        raise PipelineStageError("input", "Topic rejected: code-generation request.", ErrorCode.GUARDRAIL_BLOCKED)
+
+    monkeypatch.setattr("app._run_pipeline", blocked_pipeline)
+
+    with TestClient(app_module.app) as client:
+        response = client.post("/research", json={"topic": "write me a python script"})
+
+    assert response.status_code == 400
+    assert "code-generation" in response.json()["detail"]
+
+
+def test_research_returns_502_for_a_non_guardrail_pipeline_error(monkeypatch):
+    from crew.research_crew import PipelineStageError
+    from observability.errors import ErrorCode
+
+    def failing_pipeline(topic, force_rerun, run_id=None):
+        raise PipelineStageError("planner", "boom", ErrorCode.PROVIDER_UNAVAILABLE)
+
+    monkeypatch.setattr("app._run_pipeline", failing_pipeline)
+
+    with TestClient(app_module.app) as client:
+        response = client.post("/research", json={"topic": "t"})
+
+    assert response.status_code == 502
+
+
+def test_research_response_includes_groundedness_score(monkeypatch):
+    def fake_pipeline(topic, force_rerun, run_id=None):
+        return {
+            "report": "ok", "question_id": 1, "run_id": run_id, "reused": False,
+            "saved_to": None, "contradictions_count": 0, "findings_count": 0,
+            "groundedness_score": 0.85,
+        }
+
+    monkeypatch.setattr("app._run_pipeline", fake_pipeline)
+
+    with TestClient(app_module.app) as client:
+        response = client.post("/research", json={"topic": "t"})
+
+    assert response.json()["groundedness_score"] == 0.85
+
+
+def test_get_groundedness_returns_404_for_unknown_question():
+    with TestClient(app_module.app) as client:
+        response = client.get("/questions/999/groundedness")
+    assert response.status_code == 404
+
+
+def test_get_groundedness_returns_claims_for_a_known_question():
+    question_id = repository.create_question("topic")
+    repository.replace_claim_groundings(question_id, [
+        {"claim_text": "A", "grounded": True, "supporting_finding_id": 1, "objection": None},
+    ])
+
+    with TestClient(app_module.app) as client:
+        response = client.get(f"/questions/{question_id}/groundedness")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["question_id"] == question_id
+    assert body["claims"][0]["claim_text"] == "A"
