@@ -255,6 +255,24 @@ The scores are aggregated into a weighted average total score out of 10.0, along
 
 ---
 
+## ✅ Testing
+
+```bash
+pytest tests/ -q
+```
+
+Test count has grown alongside the production-upgrade phases (each phase's own commits/plan under `docs/superpowers/`):
+
+| Phase | Feature | Tests passing |
+| :--- | :--- | ---: |
+| 1 | LLM gateway (RouterLLM, provider fallback) | 24 |
+| 2 | Observability spine (event bus, stage-dispatch, resume) | 64 |
+| 3 | Real SSE streaming | 66 |
+| 4 | Guardrails + groundedness critic stage | 90 |
+| 5 | Caching (search, sub-question semantic, LLM response) | 99 |
+
+---
+
 ## 🛠️ Customization
 To adjust agent personalities, goals, or LLM backends:
 1. Open [`config/agents_config.yaml`](./config/agents_config.yaml).
