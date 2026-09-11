@@ -73,6 +73,11 @@ model_groups:
     - {provider: groq, model: "openai/gpt-oss-20b"}
     - {provider: openrouter, model: "nvidia/nemotron-3-super-120b-a12b:free"}
     - {provider: gemini, model: "gemini-3.6-flash"}
+  # Leads with a non-gpt-oss model, unlike every other alias below. Live-verified
+  # (Task 6): the gpt-oss family (groq and ollama_cloud both) doesn't reliably respect
+  # the tool_choice=none directive crewai sends when forcing a final answer near
+  # max_iter, causing "Tool choice is none, but model called a tool" 400s and
+  # malformed/empty final responses specifically for this tool-calling-heavy agent.
   researcher:
     - {provider: openrouter, model: "nvidia/nemotron-3-super-120b-a12b:free"}
     - {provider: groq, model: "openai/gpt-oss-120b"}

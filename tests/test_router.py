@@ -15,8 +15,11 @@ def test_get_deployments_returns_router_deployments_in_config_order(monkeypatch)
 
     deployments = router_module.get_deployments("researcher")
     assert len(deployments) == 4
-    assert deployments[0].provider == "openai"  # groq goes through crewai's openai-compatible client
-    assert deployments[1].provider == "ollama"
+    # researcher leads with openrouter (native provider), then groq (goes through
+    # crewai's openai-compatible client) — see config/agents_config.yaml's comment
+    # on the researcher entry for why non-gpt-oss leads this specific chain.
+    assert deployments[0].provider == "openrouter"
+    assert deployments[1].provider == "openai"
 
 
 def test_get_deployments_unknown_alias_raises():
