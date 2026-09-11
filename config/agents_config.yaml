@@ -62,22 +62,47 @@ classifier:
     You are a research librarian who is fast and consistent at categorizing
     factual claims into a small, fixed set of categories.
 
-# Per-agent LLM overrides (all optional — uncomment and edit to use a
-# different provider/model for a specific agent; unset agents fall back to
-# LLM_PROVIDER / LLM_MODEL in .env). Example: a fast Groq model for the
-# Planner/Classifier, a larger model for the Writer.
-#
-# planner:
-#   llm_provider: groq
-#   llm_model: llama-3.1-8b-instant
-#
-# classifier:
-#   llm_provider: groq
-#   llm_model: llama-3.1-8b-instant
-#
-# writer:
-#   llm_provider: groq
-#   llm_model: llama-3.3-70b-versatile
+# Routing: for each agent-name alias, an ordered list of {provider, model} deployments.
+# RouterLLM (llm/router_llm.py) tries them in order with conditional fallback. Provider
+# keys must be one of llm.provider._PROVIDERS: ollama_local, ollama_cloud, groq,
+# openrouter, gemini. Model names below are initial placeholders — verify with
+# GET /health/providers and correct any that don't resolve.
+model_groups:
+  planner:
+    - {provider: ollama_cloud, model: "gpt-oss:120b-cloud"}
+    - {provider: groq, model: "llama-3.3-70b-versatile"}
+    - {provider: openrouter, model: "meta-llama/llama-3.3-70b-instruct:free"}
+    - {provider: gemini, model: "gemini-2.0-flash"}
+  researcher:
+    - {provider: groq, model: "llama-3.3-70b-versatile"}
+    - {provider: ollama_cloud, model: "gpt-oss:120b-cloud"}
+    - {provider: openrouter, model: "meta-llama/llama-3.3-70b-instruct:free"}
+    - {provider: gemini, model: "gemini-2.0-flash"}
+  evidence_comparator:
+    - {provider: ollama_cloud, model: "gpt-oss:120b-cloud"}
+    - {provider: groq, model: "llama-3.3-70b-versatile"}
+    - {provider: openrouter, model: "meta-llama/llama-3.3-70b-instruct:free"}
+    - {provider: gemini, model: "gemini-2.0-flash"}
+  classifier:
+    - {provider: ollama_cloud, model: "gpt-oss:120b-cloud"}
+    - {provider: groq, model: "llama-3.3-70b-versatile"}
+    - {provider: openrouter, model: "meta-llama/llama-3.3-70b-instruct:free"}
+    - {provider: gemini, model: "gemini-2.0-flash"}
+  writer:
+    - {provider: ollama_cloud, model: "gpt-oss:120b-cloud"}
+    - {provider: openrouter, model: "meta-llama/llama-3.3-70b-instruct:free"}
+    - {provider: gemini, model: "gemini-2.0-flash"}
+    - {provider: groq, model: "llama-3.3-70b-versatile"}
+  critic:
+    - {provider: ollama_cloud, model: "gpt-oss:120b-cloud"}
+    - {provider: openrouter, model: "meta-llama/llama-3.3-70b-instruct:free"}
+    - {provider: gemini, model: "gemini-2.0-flash"}
+    - {provider: groq, model: "llama-3.3-70b-versatile"}
+  evaluator:
+    - {provider: ollama_cloud, model: "gpt-oss:120b-cloud"}
+    - {provider: groq, model: "llama-3.3-70b-versatile"}
+    - {provider: openrouter, model: "meta-llama/llama-3.3-70b-instruct:free"}
+    - {provider: gemini, model: "gemini-2.0-flash"}
 
 evaluator:
   role: Report Evaluator
