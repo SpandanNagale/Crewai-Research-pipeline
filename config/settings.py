@@ -19,6 +19,13 @@ class Settings:
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
     GROQ_BASE_URL: str = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 
+    # ── OpenRouter (opt-in) ──────────────────────────────────────────
+    OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
+    OPENROUTER_BASE_URL: str = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+
+    # ── Gemini (opt-in) ──────────────────────────────────────────────
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+
     # ── LLM provider selection ──────────────────────────────────────
     # ollama_local (default) | ollama_cloud | groq. Per-agent overrides live
     # in config/agents_config.yaml (llm_provider / llm_model / llm_temperature).

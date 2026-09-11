@@ -104,10 +104,47 @@ class GroqProvider(LLMProvider):
         )
 
 
+class OpenRouterProvider(LLMProvider):
+    """OpenRouter — aggregates many hosted models behind one OpenAI-compatible API."""
+
+    def build(self, model: str, temperature: float) -> LLM:
+        if not settings.OPENROUTER_API_KEY:
+            raise LLMConfigError(
+                "OPENROUTER_API_KEY is required to use the openrouter provider "
+                "(get one at https://openrouter.ai/keys)."
+            )
+        return LLM(
+            model=model,
+            provider="openrouter",
+            base_url=settings.OPENROUTER_BASE_URL,
+            api_key=settings.OPENROUTER_API_KEY,
+            temperature=temperature,
+        )
+
+
+class GeminiProvider(LLMProvider):
+    """Google Gemini. crewai has a native client for this provider — no base_url needed."""
+
+    def build(self, model: str, temperature: float) -> LLM:
+        if not settings.GEMINI_API_KEY:
+            raise LLMConfigError(
+                "GEMINI_API_KEY is required to use the gemini provider "
+                "(get one at https://aistudio.google.com/apikey)."
+            )
+        return LLM(
+            model=model,
+            provider="gemini",
+            api_key=settings.GEMINI_API_KEY,
+            temperature=temperature,
+        )
+
+
 _PROVIDERS = {
     "ollama_local": OllamaLocalProvider(),
     "ollama_cloud": OllamaCloudProvider(),
     "groq": GroqProvider(),
+    "openrouter": OpenRouterProvider(),
+    "gemini": GeminiProvider(),
 }
 
 _agent_overrides_lock = threading.Lock()
