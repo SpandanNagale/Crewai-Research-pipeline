@@ -8,7 +8,7 @@ conclusion can always be walked back to the raw sources that support it.
 """
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
@@ -116,3 +116,18 @@ class ClaimGrounding(Base):
     supporting_finding_id = Column(Integer, ForeignKey("findings.id"), nullable=True)
     objection = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class SearchCacheEntry(Base):
+    """
+    TTL-bounded cache of search_tool results, keyed on the normalised query
+    (see tools/search_tool.py::_cache_key). latency_ms is the real wall-clock
+    time the original provider call took, replayed as the "seconds saved"
+    metric on a cache hit rather than a fabricated estimate.
+    """
+    __tablename__ = "search_cache_entries"
+
+    query_key = Column(String, primary_key=True)
+    results_json = Column(JSON, nullable=False)
+    latency_ms = Column(Float, nullable=True)
+    fetched_at = Column(DateTime, default=datetime.utcnow, nullable=False)

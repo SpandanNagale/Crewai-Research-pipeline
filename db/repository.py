@@ -8,7 +8,7 @@ from typing import Dict, List, Optional
 
 from db.models import (
     ClaimGrounding, Conclusion, Contradiction, Finding, PipelineRun, PipelineStageState,
-    ResearchQuestion, Source,
+    ResearchQuestion, SearchCacheEntry, Source,
 )
 from db.session import get_session
 
@@ -357,6 +357,28 @@ def get_claim_groundings(question_id: int) -> List[dict]:
             }
             for r in rows
         ]
+
+
+def get_cached_search(query_key: str, ttl_seconds: int) -> Optional[dict]:
+    with get_session() as session:
+        row = session.get(SearchCacheEntry, query_key)
+        if row is None:
+            return None
+        age_seconds = (datetime.utcnow() - row.fetched_at).total_seconds()
+        if age_seconds > ttl_seconds:
+            return None
+        return {"results": row.results_json, "latency_ms": row.latency_ms}
+
+
+def set_cached_search(query_key: str, results: List[dict], latency_ms: Optional[float]) -> None:
+    with get_session() as session:
+        row = session.get(SearchCacheEntry, query_key)
+        if row is None:
+            session.add(SearchCacheEntry(query_key=query_key, results_json=results, latency_ms=latency_ms))
+        else:
+            row.results_json = results
+            row.latency_ms = latency_ms
+            row.fetched_at = datetime.utcnow()
 
 
 def list_questions(limit: int = 50) -> List[dict]:

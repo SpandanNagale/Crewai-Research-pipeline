@@ -21,5 +21,8 @@ class RunEvent(BaseModel):
     completion_tokens: Optional[int] = None
     cost_usd: Optional[float] = None
     cache_hit: Optional[bool] = None
+    tokens_saved: Optional[int] = None
+    cost_avoided_usd: Optional[float] = None
+    seconds_saved: Optional[float] = None
     message: str = ""
     detail: Optional[str] = None

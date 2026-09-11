@@ -36,6 +36,10 @@ class Settings:
     DATABASE_URL: str = os.getenv("DATABASE_URL", f"sqlite:///{_default_db_path}")
     KNOWLEDGE_REUSE_THRESHOLD: float = float(os.getenv("KNOWLEDGE_REUSE_THRESHOLD", "0.87"))
 
+    # ── Caching (Phase 5) ──────────────────────────────────────────────
+    # Search results go stale; TTL-bound the cache rather than caching forever.
+    SEARCH_CACHE_TTL_SECONDS: int = int(os.getenv("SEARCH_CACHE_TTL_SECONDS", str(6 * 3600)))
+
     OUTPUTS_DIR: str = os.path.join(os.path.dirname(__file__), "..", "outputs")
 
 
