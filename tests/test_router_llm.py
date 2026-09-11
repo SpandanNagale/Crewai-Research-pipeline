@@ -72,6 +72,28 @@ def test_rate_limit_advances_immediately_without_retry():
     assert d1.calls == 1  # no retry on the same deployment
 
 
+def test_unrecognized_status_error_advances_immediately_without_retry():
+    """
+    Regression test for a live failure: Groq returns HTTP 413 ("tokens per minute
+    limit exceeded") for an over-quota request. openai's SDK only maps
+    400/401/403/404/409/422/429/5xx to specific exception subclasses (see
+    openai._client.OpenAI._make_status_error) — 413 falls through to the bare
+    APIStatusError base class, which is not RateLimitError or any other specific
+    type. Before this was added to _IMMEDIATE_ADVANCE_EXCEPTIONS, such an error
+    propagated out of RouterLLM.call() uncaught on the very first attempt,
+    skipping every other configured deployment entirely.
+    """
+    status_err = openai.APIStatusError(
+        "request too large", response=_fake_response(413), body=None
+    )
+    d1 = FakeDeployment("a", [status_err])
+    d2 = FakeDeployment("b", ["from b"])
+    router = _router([d1, d2])
+    result = router.call("hi")
+    assert result == "from b"
+    assert d1.calls == 1  # no retry on the same deployment
+
+
 def test_failed_deployment_cools_down_across_calls():
     rl_err = openai.RateLimitError(
         "rate limited", response=_fake_response(429), body=None

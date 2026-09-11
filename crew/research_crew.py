@@ -48,6 +48,13 @@ _PROVIDER_UNAVAILABLE_EXCEPTIONS = (
     openai.APIConnectionError,
     openai.NotFoundError,
     openai.InternalServerError,
+    # Generic catch-all, kept in sync with llm/router_llm.py's
+    # _IMMEDIATE_ADVANCE_EXCEPTIONS: openai's SDK falls back to this bare base class for
+    # HTTP status codes it doesn't map to a specific subclass (e.g. Groq's 413 "tokens
+    # per minute" limit). Without this, an all-deployments-exhausted RouterLLM failure of
+    # this shape would take the "soft retry, then placeholder finding" path instead of
+    # aborting the stage cleanly.
+    openai.APIStatusError,
 )
 
 

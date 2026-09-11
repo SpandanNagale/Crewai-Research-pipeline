@@ -33,6 +33,13 @@ _IMMEDIATE_ADVANCE_EXCEPTIONS = (
     openai.AuthenticationError,
     openai.PermissionDeniedError,
     openai.NotFoundError,
+    # Generic catch-all: openai's SDK only maps HTTP 400/401/403/404/409/422/429/5xx to
+    # specific subclasses (see openai._client.OpenAI._make_status_error) — anything else
+    # (e.g. Groq's 413 "tokens per minute limit exceeded") falls through to the bare
+    # APIStatusError base class. Treated as rate-limit-shaped rather than left uncaught,
+    # since an unrecognized 4xx/5xx from a provider is presumptively that provider's
+    # trouble, not a reason to abort the whole stage without trying the next deployment.
+    openai.APIStatusError,
 )
 
 _REFUSAL_PHRASES = (
