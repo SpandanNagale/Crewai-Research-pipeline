@@ -229,7 +229,12 @@ class ResearchCrew:
                     repository.set_run_status(run_id, "failed")
                     raise
 
-                state = NodeState.DEGRADED if stage_outputs.pop("_degraded", False) else NodeState.SUCCEEDED
+                if stage_outputs.pop("_skipped_cached", False):
+                    state = NodeState.SKIPPED_CACHED
+                elif stage_outputs.pop("_degraded", False):
+                    state = NodeState.DEGRADED
+                else:
+                    state = NodeState.SUCCEEDED
                 attempts = self._collect_attempt_history()
                 repository.set_stage_state(run_id, stage, state.value, attempts=attempts)
                 emit_event("stage_finished", node_state=state)
@@ -303,10 +308,13 @@ class ResearchCrew:
         return stage_outputs
 
     def _dispatch_researcher(self, topic, question_id, stage_outputs):
-        findings, degraded, unresolved = self._run_research_stage(question_id, stage_outputs["sub_questions"])
+        findings, degraded, unresolved, all_cached = self._run_research_stage(
+            question_id, stage_outputs["sub_questions"]
+        )
         stage_outputs["findings"] = findings
         stage_outputs["unresolved_sub_questions"] = unresolved
         stage_outputs["_degraded"] = degraded
+        stage_outputs["_skipped_cached"] = all_cached
         return stage_outputs
 
     def _dispatch_evidence_comparator(self, topic, question_id, stage_outputs):
@@ -422,7 +430,93 @@ class ResearchCrew:
             raise PipelineStageError("planner", "no sub-questions were produced", ErrorCode.SCHEMA_VALIDATION_FAILED)
         return sub_questions
 
-    def _run_research_stage(self, question_id: int, sub_questions: List[str]) -> Tuple[List[dict], bool, List[str]]:
+    def _try_subquestion_cache(self, question_id: int, sub_question: str) -> Optional[List[int]]:
+        """
+        Sub-question-granularity cache hit: copies a prior question's findings
+        for a semantically-matching sub-question into this question instead of
+        re-running the Researcher. Returns None (never raises) on a miss, a
+        lookup failure, or if this crew has no reuse checker (e.g. a unit test
+        constructed via ResearchCrew.__new__).
+        """
+        checker = getattr(self, "_reuse_checker", None)
+        if checker is None:
+            return None
+        try:
+            hit = checker.find_similar_subquestion(sub_question)
+        except Exception as e:
+            logger.warning("Sub-question cache lookup failed, proceeding fresh: %s", e)
+            return None
+        if hit is None:
+            return None
+
+        copied_ids = []
+        for finding_id in hit["finding_ids"]:
+            source_finding = repository.get_finding_by_id(finding_id)
+            if source_finding is None:
+                continue
+            source_id = repository.get_or_create_source(
+                question_id, source_finding["source_url"], source_finding["source_title"] or ""
+            )
+            copied_ids.append(repository.add_finding(
+                question_id, source_id, source_finding["text"], sub_question, source_finding.get("category")
+            ))
+        if not copied_ids:
+            return None
+
+        tokens_saved = None
+        if hit.get("prompt_tokens") is not None or hit.get("completion_tokens") is not None:
+            tokens_saved = (hit.get("prompt_tokens") or 0) + (hit.get("completion_tokens") or 0)
+        emit_event(
+            "cache_hit",
+            message=f"sub-question cache hit (similarity={hit['similarity']})",
+            cache_hit=True,
+            tokens_saved=tokens_saved,
+            cost_avoided_usd=hit.get("cost_usd"),
+            seconds_saved=(hit["latency_ms"] / 1000) if hit.get("latency_ms") is not None else None,
+        )
+        return copied_ids
+
+    def _index_subquestion_for_reuse(
+        self, sub_question: str, finding_ids: List[int],
+        latency_ms: Optional[float], prompt_tokens: Optional[int],
+        completion_tokens: Optional[int], cost_usd: Optional[float],
+    ) -> None:
+        checker = getattr(self, "_reuse_checker", None)
+        if checker is None:
+            return
+        try:
+            checker.index_sub_question(sub_question, finding_ids, latency_ms, prompt_tokens, completion_tokens, cost_usd)
+        except Exception as e:
+            logger.warning("Failed to index sub-question for future cache reuse: %s", e)
+
+    @staticmethod
+    def _capture_llm_usage_since(start_len: int):
+        """
+        Real (not estimated) aggregate latency/tokens/cost of every llm_attempt
+        event emitted since start_len on the active run's event window -- used
+        to record what a sub-question's Researcher call actually cost, so a
+        future cache hit can report a genuine "cost avoided" rather than a
+        fabricated one.
+        """
+        ctx = current_run()
+        if ctx is None:
+            return None, None, None, None
+        window = [
+            e for e in ctx.stage_events[start_len:]
+            if e.event_type == "llm_attempt" and not e.cache_hit
+        ]
+        if not window:
+            return None, None, None, None
+        latency_ms = sum(e.latency_ms or 0.0 for e in window)
+        prompt_tokens = sum(e.prompt_tokens for e in window if e.prompt_tokens is not None) or None
+        completion_tokens = sum(e.completion_tokens for e in window if e.completion_tokens is not None) or None
+        costs = [e.cost_usd for e in window]
+        cost_usd = sum(costs) if costs and all(c is not None for c in costs) else None
+        return latency_ms, prompt_tokens, completion_tokens, cost_usd
+
+    def _run_research_stage(
+        self, question_id: int, sub_questions: List[str]
+    ) -> Tuple[List[dict], bool, List[str], bool]:
         """
         Runs one small Researcher call per sub-question rather than one call
         covering all of them. A single call asking a local 8B model to search,
@@ -439,16 +533,35 @@ class ResearchCrew:
         (bad/missing key, rate limit, timeout, unreachable endpoint) still
         propagates immediately as a PipelineStageError — retrying that would
         just waste time.
+
+        Before running each sub-question fresh, checks the sub-question
+        semantic cache (_try_subquestion_cache) for a prior question's
+        matching findings -- this is what makes reuse partial rather than
+        all-or-nothing at the whole-topic level. Returns a 4th value, True
+        only when every sub-question was served from that cache (no Researcher
+        call made at all), so the dispatch loop can mark the whole stage
+        skipped_cached instead of succeeded.
         """
         from tasks.schemas import ResearchOutput
 
-        researcher = get_researcher()
+        researcher = None  # built lazily -- never constructed on a fully-cached run
         any_succeeded = False
+        all_from_cache = bool(sub_questions)
         unresolved: List[str] = []
 
         for sub_question in sub_questions:
+            copied_ids = self._try_subquestion_cache(question_id, sub_question)
+            if copied_ids:
+                any_succeeded = True
+                continue
+            all_from_cache = False
+            if researcher is None:
+                researcher = get_researcher()
+
             parsed = None
             last_error = None
+            ctx = current_run()
+            usage_start = len(ctx.stage_events) if ctx is not None else 0
             for attempt in range(2):
                 research_task = get_research_task(researcher, sub_question)
                 try:
@@ -482,13 +595,18 @@ class ResearchCrew:
 
             if parsed is not None and parsed.findings:
                 any_succeeded = True
+                new_finding_ids = []
                 for item in parsed.findings:
                     source_id = repository.get_or_create_source(
                         question_id, item.source_url, item.source_title
                     )
-                    repository.add_finding(
+                    new_finding_ids.append(repository.add_finding(
                         question_id, source_id, item.finding_text, sub_question
-                    )
+                    ))
+                latency_ms, prompt_tok, completion_tok, cost_usd = self._capture_llm_usage_since(usage_start)
+                self._index_subquestion_for_reuse(
+                    sub_question, new_finding_ids, latency_ms, prompt_tok, completion_tok, cost_usd
+                )
             else:
                 logger.warning(
                     "Giving up on sub-question %r after retries, marking unresolved: %s",
@@ -505,7 +623,7 @@ class ResearchCrew:
 
         findings = repository.get_findings_list(question_id)
         degraded = bool(unresolved)
-        return findings, degraded, unresolved
+        return findings, degraded, unresolved, all_from_cache
 
     def _run_comparison_stage(self, question_id: int, findings: List[dict]) -> List[dict]:
         comparator = get_evidence_comparator()

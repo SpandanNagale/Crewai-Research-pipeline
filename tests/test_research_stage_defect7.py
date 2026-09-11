@@ -39,10 +39,11 @@ def test_unresolved_sub_question_never_becomes_a_placeholder_finding(monkeypatch
     monkeypatch.setattr("crew.research_crew._run_single_task_crew", fake_run_single_task_crew)
 
     crew = ResearchCrew.__new__(ResearchCrew)  # skip __init__ (no DB/reuse-checker needed here)
-    findings, degraded, unresolved = crew._run_research_stage(question_id, ["good-q", "bad-q"])
+    findings, degraded, unresolved, all_cached = crew._run_research_stage(question_id, ["good-q", "bad-q"])
 
     assert degraded is True
     assert unresolved == ["bad-q"]
+    assert all_cached is False
     assert len(findings) == 1
     assert all(f["sub_question"] != "bad-q" for f in repository.get_findings_list(question_id))
     assert all(f["source_url"] != "none" for f in repository.get_findings_list(question_id))

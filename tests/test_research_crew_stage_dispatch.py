@@ -14,6 +14,12 @@ class _DummyReuseChecker:
     def find_similar(self, topic):
         return None
 
+    def find_similar_subquestion(self, sub_question):
+        return None
+
+    def index_sub_question(self, *a, **k):
+        pass
+
     def index_question(self, *a, **k):
         pass
 
@@ -45,7 +51,7 @@ def _stub_success(crew, monkeypatch):
     monkeypatch.setattr(crew, "_run_planning_stage", lambda topic: ["sub-q-1", "sub-q-2"])
     monkeypatch.setattr(
         crew, "_run_research_stage",
-        lambda question_id, sub_questions: ([{"id": 1, "text": "f1", "source_url": "http://x"}], False, []),
+        lambda question_id, sub_questions: ([{"id": 1, "text": "f1", "source_url": "http://x"}], False, [], False),
     )
     monkeypatch.setattr(crew, "_run_comparison_stage", lambda question_id, findings: [])
     monkeypatch.setattr(crew, "_run_classification_stage", lambda question_id, findings: findings)
@@ -104,7 +110,7 @@ def test_degraded_researcher_stage_does_not_abort_the_run(monkeypatch):
     _stub_success(crew, monkeypatch)
     monkeypatch.setattr(
         crew, "_run_research_stage",
-        lambda question_id, sub_questions: ([{"id": 1, "text": "f1", "source_url": "http://x"}], True, ["sub-q-2"]),
+        lambda question_id, sub_questions: ([{"id": 1, "text": "f1", "source_url": "http://x"}], True, ["sub-q-2"], False),
     )
 
     crew.run_with_meta("test topic", force_rerun=True, run_id="run-degraded")
@@ -113,6 +119,21 @@ def test_degraded_researcher_stage_does_not_abort_the_run(monkeypatch):
     assert states["researcher"] == "degraded"
     assert states["writer"] == "succeeded"
     assert repository.get_run("run-degraded")["status"] == "succeeded"
+
+
+def test_fully_cached_researcher_stage_is_marked_skipped_cached(monkeypatch):
+    crew = ResearchCrew()
+    _stub_success(crew, monkeypatch)
+    monkeypatch.setattr(
+        crew, "_run_research_stage",
+        lambda question_id, sub_questions: ([{"id": 1, "text": "f1", "source_url": "http://x"}], False, [], True),
+    )
+
+    crew.run_with_meta("test topic", force_rerun=True, run_id="run-cached")
+
+    states = {s["stage"]: s["state"] for s in repository.get_stage_states("run-cached")}
+    assert states["researcher"] == "skipped_cached"
+    assert repository.get_run("run-cached")["status"] == "succeeded"
 
 
 def test_resume_skips_already_succeeded_stages_and_does_not_rerun_the_planner(monkeypatch):
