@@ -26,12 +26,6 @@ class Settings:
     # ── Gemini (opt-in) ──────────────────────────────────────────────
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
 
-    # ── LLM provider selection ──────────────────────────────────────
-    # ollama_local (default) | ollama_cloud | groq. Per-agent overrides live
-    # in config/agents_config.yaml (llm_provider / llm_model / llm_temperature).
-    LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "ollama_local")
-    LLM_MODEL: str = os.getenv("LLM_MODEL", os.getenv("OLLAMA_MODEL", "gemma3:12b"))
-
     # ── Search provider ──────────────────────────────────────────────
     # auto (serper if SERPER_API_KEY is set, else duckduckgo) | serper | duckduckgo
     SEARCH_PROVIDER: str = os.getenv("SEARCH_PROVIDER", "auto")

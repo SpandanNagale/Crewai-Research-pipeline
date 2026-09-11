@@ -31,11 +31,19 @@ def test_get_deployments_unknown_alias_raises():
 
 
 def test_get_deployments_missing_key_raises_actionable_error(monkeypatch):
+    # Blank every key explicitly (not just GROQ_API_KEY) so this is deterministic
+    # regardless of which provider leads researcher's chain or what's in a real
+    # .env on the machine running it — get_deployments() should raise on the
+    # *first* deployment it tries to build, which is whichever alias config says,
+    # and every deployment here is equally key-less so the first one always fails.
     monkeypatch.setattr("llm.provider.settings.GROQ_API_KEY", "")
+    monkeypatch.setattr("llm.provider.settings.OLLAMA_API_KEY", "")
+    monkeypatch.setattr("llm.provider.settings.OPENROUTER_API_KEY", "")
+    monkeypatch.setattr("llm.provider.settings.GEMINI_API_KEY", "")
     import llm.router as router_module
     router_module._deployment_cache.clear()
 
-    with pytest.raises(LLMConfigError, match="GROQ_API_KEY"):
+    with pytest.raises(LLMConfigError, match="API_KEY"):
         router_module.get_deployments("researcher")
 
 

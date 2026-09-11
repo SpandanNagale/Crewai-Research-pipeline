@@ -112,6 +112,24 @@ def test_unrecognized_status_error_advances_immediately_without_retry():
     assert d1.calls == 1  # no retry on the same deployment
 
 
+def test_bad_request_error_is_not_treated_as_advance_worthy():
+    """
+    A deterministic client-request error (400) already has its own specific
+    openai.BadRequestError subclass and is not in any exception tuple — retrying a
+    different deployment won't fix a malformed request, so it must propagate
+    uncaught rather than cycling through every deployment for an identical error.
+    """
+    bad_request = openai.BadRequestError(
+        "malformed request", response=_fake_response(400), body=None
+    )
+    d1 = FakeDeployment("a", [bad_request])
+    d2 = FakeDeployment("b", ["from b"])
+    router = _router([d1, d2])
+    with pytest.raises(openai.BadRequestError):
+        router.call("hi")
+    assert d2.calls == 0  # never fell over to the next deployment
+
+
 def test_failed_deployment_cools_down_across_calls():
     rl_err = openai.RateLimitError(
         "rate limited", response=_fake_response(429), body=None

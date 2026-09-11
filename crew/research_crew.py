@@ -48,14 +48,16 @@ _PROVIDER_UNAVAILABLE_EXCEPTIONS = (
     openai.APIConnectionError,
     openai.NotFoundError,
     openai.InternalServerError,
-    # Generic catch-all, kept in sync with llm/router_llm.py's
-    # _IMMEDIATE_ADVANCE_EXCEPTIONS: openai's SDK falls back to this bare base class for
-    # HTTP status codes it doesn't map to a specific subclass (e.g. Groq's 413 "tokens
-    # per minute" limit). Without this, an all-deployments-exhausted RouterLLM failure of
-    # this shape would take the "soft retry, then placeholder finding" path instead of
-    # aborting the stage cleanly.
-    openai.APIStatusError,
 )
+
+# Kept in sync with llm/router_llm.py's _GENERIC_STATUS_ERROR_ADVANCE_CODES: status
+# codes that surface as the generic openai.APIStatusError base class (not one of the
+# specific subclasses above) but are still genuine provider-availability trouble, e.g.
+# Groq's 413 "tokens per minute" limit. Deliberately excludes deterministic
+# client-request errors (400/409/422) that already have their own specific subclass —
+# those are a real bug in what this pipeline sent, not a provider being unavailable, so
+# they take the "soft retry, then placeholder finding" path instead.
+_GENERIC_STATUS_ERROR_UNAVAILABLE_CODES = frozenset({408, 413, 503, 529})
 
 
 def _is_provider_unavailable_error(e: Exception) -> bool:
@@ -68,7 +70,11 @@ def _is_provider_unavailable_error(e: Exception) -> bool:
     worth a retry / graceful per-item fallback instead of aborting the whole
     pipeline run.
     """
-    return isinstance(e, _PROVIDER_UNAVAILABLE_EXCEPTIONS)
+    if isinstance(e, _PROVIDER_UNAVAILABLE_EXCEPTIONS):
+        return True
+    if isinstance(e, openai.APIStatusError):
+        return e.status_code in _GENERIC_STATUS_ERROR_UNAVAILABLE_CODES
+    return False
 
 
 def _extract_pydantic(crew_output, model: Type[T], stage: str) -> T:

@@ -92,13 +92,17 @@ def check_provider_health() -> List[dict]:
             continue
 
         for entry, deployment in zip(group, deployments):
-            # Not every native provider completion class carries a `timeout`
-            # field (e.g. GeminiCompletion doesn't), so read it defensively
-            # rather than assuming every deployment has one.
-            original_timeout = getattr(deployment, "timeout", None)
-            deployment.timeout = 15
+            # Ping a throwaway copy, never the cached instance: get_deployments()
+            # returns the exact same LLM objects live RouterLLMs hold, and a health
+            # check firing during a real run must not mutate a deployment's timeout
+            # out from under an in-flight generation. Not every native provider
+            # completion class carries a `timeout` field (e.g. GeminiCompletion
+            # doesn't) — pydantic allows the assignment either way, it's just a
+            # no-op on the copy for those.
+            probe = deployment.model_copy()
+            probe.timeout = 15
             try:
-                deployment.call("Reply with the single word: pong")
+                probe.call("Reply with the single word: pong")
                 results.append({
                     "agent_name": agent_name,
                     "provider": entry["provider"],
@@ -114,7 +118,5 @@ def check_provider_health() -> List[dict]:
                     "status": "error",
                     "detail": str(e),
                 })
-            finally:
-                deployment.timeout = original_timeout
 
     return results

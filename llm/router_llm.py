@@ -33,14 +33,18 @@ _IMMEDIATE_ADVANCE_EXCEPTIONS = (
     openai.AuthenticationError,
     openai.PermissionDeniedError,
     openai.NotFoundError,
-    # Generic catch-all: openai's SDK only maps HTTP 400/401/403/404/409/422/429/5xx to
-    # specific subclasses (see openai._client.OpenAI._make_status_error) — anything else
-    # (e.g. Groq's 413 "tokens per minute limit exceeded") falls through to the bare
-    # APIStatusError base class. Treated as rate-limit-shaped rather than left uncaught,
-    # since an unrecognized 4xx/5xx from a provider is presumptively that provider's
-    # trouble, not a reason to abort the whole stage without trying the next deployment.
-    openai.APIStatusError,
 )
+
+# Status codes treated as advance-worthy when they surface as the generic
+# openai.APIStatusError base class rather than one of the specific subclasses above.
+# openai's SDK only maps HTTP 400/401/403/404/409/422/429/5xx to named subclasses (see
+# openai._client.OpenAI._make_status_error) — anything else (e.g. Groq's 413 "tokens per
+# minute limit exceeded") falls through to the bare base class. Deliberately excludes
+# deterministic client-request errors that already have their own specific subclass
+# (400 BadRequestError, 409 ConflictError, 422 UnprocessableEntityError) — retrying a
+# different deployment won't fix a malformed request, so those propagate uncaught and
+# fail the stage instead of cycling through every deployment for an identical error.
+_GENERIC_STATUS_ERROR_ADVANCE_CODES = frozenset({408, 413, 503, 529})
 
 _REFUSAL_PHRASES = (
     "i cannot assist",
@@ -127,6 +131,16 @@ class RouterLLM(BaseLLM):
                     logger.warning(
                         "Deployment %s unavailable, advancing immediately: %s",
                         getattr(deployment, "model", i), e,
+                    )
+                    self._cooldown_until[i] = time.monotonic() + _COOLDOWN_SECONDS
+                    break
+                except openai.APIStatusError as e:
+                    if e.status_code not in _GENERIC_STATUS_ERROR_ADVANCE_CODES:
+                        raise
+                    last_error = e
+                    logger.warning(
+                        "Deployment %s unavailable (status %s), advancing immediately: %s",
+                        getattr(deployment, "model", i), e.status_code, e,
                     )
                     self._cooldown_until[i] = time.monotonic() + _COOLDOWN_SECONDS
                     break

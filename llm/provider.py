@@ -20,7 +20,6 @@ client we want.
 from __future__ import annotations
 
 import logging
-import os
 from abc import ABC, abstractmethod
 from typing import Optional
 
@@ -72,7 +71,6 @@ class OllamaCloudProvider(LLMProvider):
                 "LLM_PROVIDER=ollama_cloud requires OLLAMA_API_KEY to be set in .env "
                 "(get one at https://ollama.com after `ollama signin`)."
             )
-        os.environ.setdefault("OLLAMA_API_KEY", settings.OLLAMA_API_KEY)
         return LLM(
             model=model,
             provider="ollama",
@@ -92,7 +90,6 @@ class GroqProvider(LLMProvider):
                 "LLM_PROVIDER=groq requires GROQ_API_KEY to be set in .env "
                 "(get one at https://console.groq.com/keys)."
             )
-        os.environ.setdefault("OPENAI_API_KEY", settings.GROQ_API_KEY)
         return LLM(
             model=model,
             provider="openai",
