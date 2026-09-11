@@ -150,3 +150,14 @@ class RouterLLM(BaseLLM):
 
     def get_token_usage_summary(self):
         return self.deployments[0].get_token_usage_summary()
+
+    def supports_function_calling(self) -> bool:
+        """
+        Not declared on BaseLLM — crewai's executor gates its entire native
+        tool-calling path on hasattr(self.llm, "supports_function_calling")
+        (see crewai.agents.crew_agent_executor). Without this, every deployment's
+        own supports_function_calling() is unreachable and every tool-using agent
+        silently falls back to the text-parsed ReAct loop instead of native
+        function calling.
+        """
+        return self.deployments[0].supports_function_calling()

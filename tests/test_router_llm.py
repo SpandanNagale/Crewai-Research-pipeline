@@ -37,9 +37,27 @@ class FakeDeployment:
     def get_token_usage_summary(self):
         return {}
 
+    def supports_function_calling(self):
+        return True
+
 
 def _router(deployments):
     return RouterLLM(model="test-alias", deployments=deployments)
+
+
+def test_supports_function_calling_delegates_to_primary_deployment():
+    """
+    Regression test: crewai's executor gates its entire native tool-calling path
+    on hasattr(self.llm, "supports_function_calling") — BaseLLM does not declare
+    this method, so a RouterLLM without its own definition is silently routed to
+    crewai's text-parsed ReAct loop instead of native function calling for every
+    tool-using agent.
+    """
+    d1 = FakeDeployment("a", [])
+    router = _router([d1])
+    assert hasattr(router, "supports_function_calling")
+    assert callable(router.supports_function_calling)
+    assert router.supports_function_calling() is True
 
 
 def test_first_deployment_succeeds_immediately():

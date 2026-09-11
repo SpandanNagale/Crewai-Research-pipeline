@@ -18,6 +18,36 @@ def test_get_llm_returns_router_llm_for_known_alias(monkeypatch):
     assert len(llm.deployments) == 4
 
 
+def test_get_llm_result_exposes_full_duck_typed_contract_crewai_probes(monkeypatch):
+    """
+    Regression test for a real bug found in final review: RouterLLM originally
+    delegated get_context_window_size/supports_stop_words/supports_multimodal/
+    get_token_usage_summary but not supports_function_calling — a method not
+    declared on BaseLLM at all, which crewai's agent executor hasattr-probes to
+    decide whether to use native tool-calling or fall back to its text-parsed
+    ReAct loop. A mocked unit test of RouterLLM in isolation can't catch a
+    missing method; this builds a real get_llm() result and checks the whole
+    attribute surface crewai's executor actually reads.
+    """
+    monkeypatch.setattr("llm.provider.settings.GROQ_API_KEY", "groq-test")
+    monkeypatch.setattr("llm.provider.settings.OLLAMA_API_KEY", "ollama-test")
+    monkeypatch.setattr("llm.provider.settings.OPENROUTER_API_KEY", "or-test")
+    monkeypatch.setattr("llm.provider.settings.GEMINI_API_KEY", "gemini-test")
+    import llm.router as router_module
+    router_module._deployment_cache.clear()
+
+    llm = get_llm("researcher")
+    for method_name in (
+        "supports_function_calling",
+        "get_context_window_size",
+        "supports_stop_words",
+        "supports_multimodal",
+        "get_token_usage_summary",
+    ):
+        assert hasattr(llm, method_name), f"missing {method_name}"
+        assert callable(getattr(llm, method_name)), f"{method_name} not callable"
+
+
 def test_get_llm_unknown_alias_raises():
     with pytest.raises(LLMConfigError):
         get_llm("not_a_real_agent")
