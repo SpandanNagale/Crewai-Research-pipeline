@@ -20,6 +20,8 @@ _config_cache: dict | None = None
 _deployment_cache: Dict[str, List[LLM]] = {}
 _deployment_cache_lock = threading.Lock()
 
+_alias_cache: Dict[str, List[str]] = {}
+
 
 def _load_config() -> dict:
     global _config_cache
@@ -66,6 +68,30 @@ def get_deployments(agent_name: str) -> List[LLM]:
 
         _deployment_cache[agent_name] = deployments
         return deployments
+
+
+def get_deployment_aliases(agent_name: str) -> List[str]:
+    """
+    Ordered list of config-alias strings (e.g. "groq", "ollama_cloud") parallel to
+    get_deployments(agent_name)'s LLM list -- needed because crewai.LLM's own
+    `.provider` attribute collapses distinct aliases onto the same value (Groq and
+    raw OpenAI both build provider="openai"; ollama_local and ollama_cloud both
+    build provider="ollama"), so it can't identify which deployment actually
+    served a call. Shares _deployment_cache_lock rather than adding a second lock.
+    """
+    with _deployment_cache_lock:
+        if agent_name in _alias_cache:
+            return _alias_cache[agent_name]
+        config = _load_config()
+        group = config.get("model_groups", {}).get(agent_name)
+        if not group:
+            raise LLMConfigError(
+                f"no model_groups entry for agent_name={agent_name!r} in "
+                "config/agents_config.yaml."
+            )
+        aliases = [entry["provider"] for entry in group]
+        _alias_cache[agent_name] = aliases
+        return aliases
 
 
 def check_provider_health() -> List[dict]:

@@ -4,6 +4,8 @@ import openai
 import pytest
 
 from llm.router_llm import GuardrailRefusalError, RouterLLM
+from observability.bus import EventBus
+from observability.context import clear_run, set_stage, start_run
 
 
 class FakeDeployment:
@@ -172,3 +174,59 @@ def _fake_response(status_code):
 
     request = httpx.Request("POST", "https://example.invalid")
     return httpx.Response(status_code, request=request)
+
+
+def _drain(run_id):
+    q = EventBus.instance().queue_sink.get_queue(run_id)
+    events = []
+    while not q.empty():
+        events.append(q.get_nowait())
+    return events
+
+
+def test_successful_call_emits_llm_attempt_event_with_resolved_deployment():
+    EventBus.reset_for_tests()
+    start_run("run-events-1")
+    set_stage("researcher")
+    d1 = FakeDeployment("gpt-oss:120b-cloud", ["final answer"])
+    router = RouterLLM(model="researcher", deployments=[d1], aliases=["ollama_cloud"])
+    router.call("hi")
+    clear_run()
+
+    events = [e for e in _drain("run-events-1") if e.event_type == "llm_attempt"]
+    assert len(events) == 1
+    assert events[0].resolved_deployment == "ollama_cloud:gpt-oss:120b-cloud"
+    assert events[0].attempt == 0
+    assert events[0].message == "ok"
+
+
+def test_fallback_emits_one_llm_attempt_event_per_attempt():
+    EventBus.reset_for_tests()
+    start_run("run-events-2")
+    set_stage("researcher")
+    rl_err = openai.RateLimitError("rate limited", response=_fake_response(429), body=None)
+    d1 = FakeDeployment("a", [rl_err])
+    d2 = FakeDeployment("b", ["from b"])
+    router = RouterLLM(model="researcher", deployments=[d1, d2], aliases=["groq", "openrouter"])
+    router.call("hi")
+    clear_run()
+
+    events = [e for e in _drain("run-events-2") if e.event_type == "llm_attempt"]
+    assert len(events) == 2
+    assert events[0].resolved_deployment == "groq:a"
+    assert events[0].message == "PROVIDER_RATE_LIMIT"
+    assert events[1].resolved_deployment == "openrouter:b"
+    assert events[1].message == "ok"
+
+
+def test_missing_aliases_falls_back_to_index_without_crashing():
+    EventBus.reset_for_tests()
+    start_run("run-events-3")
+    set_stage("planner")
+    d1 = FakeDeployment("a", ["final answer"])
+    router = RouterLLM(model="planner", deployments=[d1])  # no aliases passed
+    router.call("hi")
+    clear_run()
+
+    events = [e for e in _drain("run-events-3") if e.event_type == "llm_attempt"]
+    assert events[0].resolved_deployment == "0:a"

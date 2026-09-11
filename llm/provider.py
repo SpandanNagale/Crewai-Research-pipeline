@@ -153,8 +153,9 @@ def get_llm(agent_name: Optional[str] = None) -> LLM:
     if not agent_name:
         raise LLMConfigError("get_llm() requires a non-empty agent_name.")
 
-    from llm.router import get_deployments
+    from llm.router import get_deployment_aliases, get_deployments
     from llm.router_llm import RouterLLM
 
     deployments = get_deployments(agent_name)
-    return RouterLLM(model=agent_name, deployments=deployments)
+    aliases = get_deployment_aliases(agent_name)
+    return RouterLLM(model=agent_name, deployments=deployments, aliases=aliases)

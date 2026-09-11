@@ -79,3 +79,24 @@ def test_check_provider_health_pings_every_deployment(monkeypatch):
     assert len(results) > 0
     assert all(r["status"] == "ok" for r in results)
     assert {"agent_name", "provider", "model", "status", "detail"} <= results[0].keys()
+
+
+def test_get_deployment_aliases_returns_config_aliases_parallel_to_deployments(monkeypatch):
+    monkeypatch.setattr("llm.provider.settings.GROQ_API_KEY", "groq-test")
+    monkeypatch.setattr("llm.provider.settings.OLLAMA_API_KEY", "ollama-test")
+    monkeypatch.setattr("llm.provider.settings.OPENROUTER_API_KEY", "or-test")
+    monkeypatch.setattr("llm.provider.settings.GEMINI_API_KEY", "gemini-test")
+
+    import llm.router as router_module
+    router_module._deployment_cache.clear()
+    router_module._alias_cache.clear()
+
+    deployments = router_module.get_deployments("researcher")
+    aliases = router_module.get_deployment_aliases("researcher")
+    assert len(aliases) == len(deployments)
+    # Confirms aliases distinguish what deployments[i].provider cannot: Groq and
+    # OpenRouter both build distinct crewai provider= strings here, but
+    # ollama_local/ollama_cloud would collide on provider="ollama" if both were in
+    # one chain -- aliases is the only place that distinction survives.
+    assert aliases[0] == "openrouter"
+    assert aliases[1] == "groq"

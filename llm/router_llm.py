@@ -18,6 +18,10 @@ import openai
 from crewai.llm import BaseLLM
 from pydantic import PrivateAttr
 
+from observability.context import emit_event
+from observability.errors import ErrorCode
+from observability.pricing import estimate_cost
+
 logger = logging.getLogger(__name__)
 
 _COOLDOWN_SECONDS = 600.0
@@ -73,6 +77,41 @@ def _raise_if_refusal(text: str) -> None:
             raise GuardrailRefusalError(f"Deployment response looked like a refusal: {text[:200]!r}")
 
 
+def classify_provider_exception(e: Exception) -> ErrorCode:
+    if isinstance(e, openai.AuthenticationError):
+        return ErrorCode.PROVIDER_AUTH_FAILED
+    if isinstance(e, openai.RateLimitError):
+        return ErrorCode.PROVIDER_RATE_LIMIT
+    if isinstance(e, (openai.APITimeoutError, openai.APIConnectionError)):
+        return ErrorCode.PROVIDER_TIMEOUT
+    if isinstance(e, (openai.PermissionDeniedError, openai.NotFoundError, openai.InternalServerError)):
+        return ErrorCode.PROVIDER_UNAVAILABLE
+    if isinstance(e, openai.APIStatusError) and e.status_code in _GENERIC_STATUS_ERROR_ADVANCE_CODES:
+        return ErrorCode.PROVIDER_UNAVAILABLE
+    return ErrorCode.INTERNAL
+
+
+def _safe_usage(deployment) -> dict:
+    try:
+        summary = deployment.get_token_usage_summary()
+    except Exception:
+        return {}
+    if hasattr(summary, "prompt_tokens"):
+        return {"prompt_tokens": summary.prompt_tokens, "completion_tokens": summary.completion_tokens}
+    if isinstance(summary, dict):
+        return {"prompt_tokens": summary.get("prompt_tokens"), "completion_tokens": summary.get("completion_tokens")}
+    return {}
+
+
+def _usage_delta(before: dict, after: dict):
+    def _diff(key):
+        b, a = before.get(key), after.get(key)
+        if b is None or a is None:
+            return None
+        return max(a - b, 0)
+    return _diff("prompt_tokens"), _diff("completion_tokens")
+
+
 class RouterLLM(BaseLLM):
     """
     A BaseLLM that fans out to a list of real deployments in order, with
@@ -81,6 +120,7 @@ class RouterLLM(BaseLLM):
     """
 
     deployments: List[Any]
+    aliases: List[str] = []
 
     _cooldown_until: dict = PrivateAttr(default_factory=dict)
 
@@ -105,7 +145,11 @@ class RouterLLM(BaseLLM):
         last_error: Optional[Exception] = None
         for i in order:
             deployment = self.deployments[i]
+            alias = self.aliases[i] if i < len(self.aliases) else str(i)
+            resolved = f"{alias}:{getattr(deployment, 'model', i)}"
             for attempt in range(2):
+                started = time.monotonic()
+                usage_before = _safe_usage(deployment)
                 try:
                     result = deployment.call(
                         messages, tools, callbacks, available_functions,
@@ -113,6 +157,11 @@ class RouterLLM(BaseLLM):
                     )
                 except _TRANSIENT_EXCEPTIONS as e:
                     last_error = e
+                    emit_event(
+                        "llm_attempt", model_alias=self.model, resolved_deployment=resolved,
+                        attempt=attempt, latency_ms=(time.monotonic() - started) * 1000,
+                        message=classify_provider_exception(e).value, detail=str(e),
+                    )
                     if attempt == 0:
                         logger.warning(
                             "Deployment %s transient error (attempt 1/2), retrying: %s",
@@ -128,6 +177,11 @@ class RouterLLM(BaseLLM):
                     break
                 except _IMMEDIATE_ADVANCE_EXCEPTIONS as e:
                     last_error = e
+                    emit_event(
+                        "llm_attempt", model_alias=self.model, resolved_deployment=resolved,
+                        attempt=attempt, latency_ms=(time.monotonic() - started) * 1000,
+                        message=classify_provider_exception(e).value, detail=str(e),
+                    )
                     logger.warning(
                         "Deployment %s unavailable, advancing immediately: %s",
                         getattr(deployment, "model", i), e,
@@ -138,6 +192,11 @@ class RouterLLM(BaseLLM):
                     if e.status_code not in _GENERIC_STATUS_ERROR_ADVANCE_CODES:
                         raise
                     last_error = e
+                    emit_event(
+                        "llm_attempt", model_alias=self.model, resolved_deployment=resolved,
+                        attempt=attempt, latency_ms=(time.monotonic() - started) * 1000,
+                        message=classify_provider_exception(e).value, detail=str(e),
+                    )
                     logger.warning(
                         "Deployment %s unavailable (status %s), advancing immediately: %s",
                         getattr(deployment, "model", i), e.status_code, e,
@@ -147,6 +206,15 @@ class RouterLLM(BaseLLM):
                 else:
                     if isinstance(result, str):
                         _raise_if_refusal(result)
+                    usage_after = _safe_usage(deployment)
+                    prompt_tok, completion_tok = _usage_delta(usage_before, usage_after)
+                    emit_event(
+                        "llm_attempt", model_alias=self.model, resolved_deployment=resolved,
+                        attempt=attempt, latency_ms=(time.monotonic() - started) * 1000,
+                        prompt_tokens=prompt_tok, completion_tokens=completion_tok,
+                        cost_usd=estimate_cost(alias, getattr(deployment, "model", ""), prompt_tok, completion_tok),
+                        message="ok",
+                    )
                     return result
 
         if last_error is not None:
