@@ -1,17 +1,22 @@
 import re
 from dataclasses import dataclass
+from typing import Optional
+
 from llm.provider import get_llm
 
 
 @dataclass
 class EvalResult:
-    citation_score: float     # 0–10: how well claims are cited
-    coverage_score: float     # 0–10: how completely the topic is covered
-    clarity_score: float      # 0–10: readability and structure
-    total: float              # weighted average
-    feedback: str             # short critique from the LLM judge
+    citation_score: Optional[float]   # 0-10: how well claims are cited
+    coverage_score: Optional[float]   # 0-10: how completely the topic is covered
+    clarity_score: Optional[float]    # 0-10: readability and structure
+    total: Optional[float]            # weighted average; None if any dimension failed to parse
+    feedback: str                     # short critique from the LLM judge
+    parse_failed: bool = False        # defect #8: a parse failure is never silently a 0.0
 
     def __str__(self) -> str:
+        if self.parse_failed:
+            return f"Judge output could not be parsed.\n\nFeedback:\n{self.feedback}"
         return (
             f"Citation score : {self.citation_score:.1f}/10\n"
             f"Coverage score : {self.coverage_score:.1f}/10\n"
@@ -28,9 +33,15 @@ def score_report(report: str, topic: str) -> EvalResult:
     the global LLM_PROVIDER/LLM_MODEL), so scoring can run on a different
     provider/model than the pipeline agents.
     Returns an EvalResult with numeric scores and written feedback.
+
+    Defect #8 fix: a judge response that doesn't parse is never silently
+    scored as 0.0 (indistinguishable from "the judge gave this report the
+    worst possible score"). parse_failed is set instead, and any dimension
+    that couldn't be parsed comes back None -- total is None whenever any
+    dimension failed to parse, since a weighted average with a missing term
+    isn't a real average.
     """
     llm = get_llm("evaluator")
-
 
     prompt = f"""You are a strict academic reviewer. Evaluate the following research report on the topic "{topic}".
 
@@ -50,15 +61,15 @@ FEEDBACK: <2-3 sentences of constructive critique>
 --- REPORT END ---
 """
 
-    
     text = llm.call([{"role": "user", "content": prompt}])
 
     citation = _extract_score(text, "CITATION")
     coverage = _extract_score(text, "COVERAGE")
-    clarity  = _extract_score(text, "CLARITY")
+    clarity = _extract_score(text, "CLARITY")
     feedback = _extract_feedback(text)
 
-    total = round((citation * 0.4 + coverage * 0.35 + clarity * 0.25), 2)
+    parse_failed = citation is None or coverage is None or clarity is None
+    total = None if parse_failed else round((citation * 0.4 + coverage * 0.35 + clarity * 0.25), 2)
 
     return EvalResult(
         citation_score=citation,
@@ -66,14 +77,15 @@ FEEDBACK: <2-3 sentences of constructive critique>
         clarity_score=clarity,
         total=total,
         feedback=feedback,
+        parse_failed=parse_failed,
     )
 
 
-def _extract_score(text: str, label: str) -> float:
+def _extract_score(text: str, label: str) -> Optional[float]:
     match = re.search(rf"{label}:\s*([0-9]+(?:\.[0-9]+)?)", text, re.IGNORECASE)
     if match:
         return min(10.0, float(match.group(1)))
-    return 0.0
+    return None
 
 
 def _extract_feedback(text: str) -> str:

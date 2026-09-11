@@ -273,6 +273,7 @@ async def stream_research(req: ResearchRequest, request: Request):
                     "clarity_score": eval_result.clarity_score,
                     "total": eval_result.total,
                     "feedback": eval_result.feedback,
+                    "parse_failed": eval_result.parse_failed,
                 }
             yield _sse("done", done_payload)
         finally:
@@ -296,6 +297,7 @@ def evaluate_report(req: EvalRequest):
         "clarity_score": result.clarity_score,
         "total": result.total,
         "feedback": result.feedback,
+        "parse_failed": result.parse_failed,
     }
 
 
