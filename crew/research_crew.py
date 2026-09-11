@@ -20,6 +20,7 @@ from tasks.plan_task import get_plan_task
 from tasks.research_task import get_research_task
 from tasks.write_task import get_write_task
 from tools.file_tool import save_report
+from observability.errors import ErrorCode
 
 logger = logging.getLogger(__name__)
 
@@ -29,9 +30,10 @@ T = TypeVar("T", bound=BaseModel)
 class PipelineStageError(RuntimeError):
     """Raised when a pipeline stage (an LLM call or its parsing) fails outright."""
 
-    def __init__(self, stage: str, detail: str):
+    def __init__(self, stage: str, detail: str, error_code: ErrorCode = ErrorCode.INTERNAL):
         self.stage = stage
         self.detail = detail
+        self.error_code = error_code
         super().__init__(f"Pipeline stage '{stage}' failed: {detail}")
 
 
