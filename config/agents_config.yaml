@@ -65,8 +65,9 @@ classifier:
 # Routing: for each agent-name alias, an ordered list of {provider, model} deployments.
 # RouterLLM (llm/router_llm.py) tries them in order with conditional fallback. Provider
 # keys must be one of llm.provider._PROVIDERS: ollama_local, ollama_cloud, groq,
-# openrouter, gemini. Model names below are initial placeholders — verify with
-# GET /health/providers and correct any that don't resolve.
+# openrouter, gemini. Model names below are live-verified against GET /health/providers
+# as of Phase 1 — provider catalogs change over time, so re-verify there if a
+# deployment starts reporting status: "error".
 model_groups:
   planner:
     - {provider: ollama_cloud, model: "gpt-oss:120b-cloud"}
@@ -78,6 +79,9 @@ model_groups:
   # the tool_choice=none directive crewai sends when forcing a final answer near
   # max_iter, causing "Tool choice is none, but model called a tool" 400s and
   # malformed/empty final responses specifically for this tool-calling-heavy agent.
+  # Its groq fallback below uses the larger gpt-oss-120b rather than the 20b every
+  # other alias uses, since this agent's multi-step search/synthesis is the most
+  # demanding workload in the pipeline — worth the extra latency if it's ever reached.
   researcher:
     - {provider: openrouter, model: "nvidia/nemotron-3-super-120b-a12b:free"}
     - {provider: groq, model: "openai/gpt-oss-120b"}
