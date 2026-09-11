@@ -12,6 +12,7 @@ from crew.research_crew import PipelineStageError, ResearchCrew
 from db import repository
 from db.session import init_db
 from eval.scorer import score_report
+from llm.router import check_provider_health
 from memory.reuse import KnowledgeReuseChecker
 from worker import job_manager
 
@@ -60,6 +61,12 @@ class ResearchResponse(BaseModel):
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/health/providers")
+def health_providers():
+    """Preflight status of every configured LLM deployment, for the UI's status dots."""
+    return {"providers": check_provider_health()}
 
 
 def _run_pipeline(topic: str, force_rerun: bool) -> dict:
