@@ -1,6 +1,7 @@
 import logging
 import re
-from typing import List, Optional, Type, TypeVar
+import uuid
+from typing import List, Optional, Tuple, Type, TypeVar
 
 import openai
 from crewai import Crew, Process
@@ -13,14 +14,17 @@ from agents.researcher import get_researcher
 from agents.writer import get_writer
 from db import repository
 from db.session import init_db
+from llm.router_llm import classify_provider_exception
 from memory.reuse import KnowledgeReuseChecker
+from observability.context import clear_run, current_run, emit_event, set_stage, start_run
+from observability.errors import ErrorCode
+from observability.node_state import NodeState
 from tasks.classify_task import get_classify_task
 from tasks.compare_task import get_compare_task
 from tasks.plan_task import get_plan_task
 from tasks.research_task import get_research_task
 from tasks.write_task import get_write_task
 from tools.file_tool import save_report
-from observability.errors import ErrorCode
 
 logger = logging.getLogger(__name__)
 
@@ -107,9 +111,13 @@ def _extract_pydantic(crew_output, model: Type[T], stage: str) -> T:
         try:
             return model.model_validate_json(match.group(0))
         except Exception as e:
-            raise PipelineStageError(stage, f"could not parse structured output: {e}") from e
+            raise PipelineStageError(
+                stage, f"could not parse structured output: {e}", ErrorCode.SCHEMA_VALIDATION_FAILED
+            ) from e
 
-    raise PipelineStageError(stage, "LLM did not return the expected structured output")
+    raise PipelineStageError(
+        stage, "LLM did not return the expected structured output", ErrorCode.SCHEMA_VALIDATION_FAILED
+    )
 
 
 def _parse_sub_questions(text: str) -> List[str]:
@@ -139,51 +147,162 @@ def _extract_conclusion_section(report_markdown: str) -> str:
 
 
 class ResearchCrew:
+    STAGES = ["planner", "researcher", "evidence_comparator", "classifier", "writer"]
+
     def __init__(self):
         init_db()
         self._reuse_checker = KnowledgeReuseChecker()
+        self._STAGE_RUNNERS = {
+            "planner": self._dispatch_planner,
+            "researcher": self._dispatch_researcher,
+            "evidence_comparator": self._dispatch_evidence_comparator,
+            "classifier": self._dispatch_classifier,
+            "writer": self._dispatch_writer,
+        }
 
     def run(self, topic: str, force_rerun: bool = False) -> str:
         """Backward-compatible entry point: returns just the final report text."""
         return self.run_with_meta(topic, force_rerun=force_rerun)["report"]
 
-    def run_with_meta(self, topic: str, force_rerun: bool = False) -> dict:
-        if not force_rerun:
-            reused = self._try_reuse(topic)
-            if reused is not None:
-                return reused
+    def run_with_meta(
+        self,
+        topic: str,
+        force_rerun: bool = False,
+        run_id: Optional[str] = None,
+        resume_question_id: Optional[int] = None,
+    ) -> dict:
+        run_id = run_id or str(uuid.uuid4())
+        start_run(run_id)
+        try:
+            emit_event("run_started", message=f"topic={topic!r}")
 
-        question_id = repository.create_question(topic)
-        logger.info("Created research_question id=%s for topic=%r", question_id, topic)
+            if resume_question_id is None:
+                if not force_rerun:
+                    reused = self._try_reuse(topic)
+                    if reused is not None:
+                        reused["run_id"] = run_id
+                        emit_event("run_finished", cache_hit=True, message="reused prior research")
+                        return reused
 
+                question_id = repository.create_question(topic)
+                logger.info("Created research_question id=%s for topic=%r", question_id, topic)
+                repository.create_pipeline_run(run_id, question_id, topic)
+                stage_outputs: dict = {}
+                start_index = 0
+            else:
+                question_id = resume_question_id
+                repository.reattach_pipeline_run(run_id, question_id)
+                stage_outputs = self._load_resumable_state(question_id)
+                start_index = self._first_unresolved_stage_index(run_id)
+
+            for i, stage in enumerate(self.STAGES):
+                set_stage(stage)
+                if i < start_index:
+                    repository.set_stage_state(run_id, stage, NodeState.SKIPPED_CACHED.value)
+                    continue
+
+                repository.set_stage_state(run_id, stage, NodeState.RUNNING.value)
+                emit_event("stage_started")
+                try:
+                    stage_outputs = self._STAGE_RUNNERS[stage](topic, question_id, stage_outputs)
+                except PipelineStageError as e:
+                    attempts = self._collect_attempt_history()
+                    repository.set_stage_state(
+                        run_id, stage, NodeState.FAILED.value, detail=e.detail, attempts=attempts
+                    )
+                    emit_event("stage_failed", detail=e.detail)
+                    for remaining in self.STAGES[i + 1:]:
+                        repository.set_stage_state(run_id, remaining, NodeState.NOT_REACHED.value)
+                    repository.set_run_status(run_id, "failed")
+                    raise
+
+                state = NodeState.DEGRADED if stage_outputs.pop("_degraded", False) else NodeState.SUCCEEDED
+                attempts = self._collect_attempt_history()
+                repository.set_stage_state(run_id, stage, state.value, attempts=attempts)
+                emit_event("stage_finished", node_state=state)
+
+            findings = stage_outputs["findings"]
+            contradictions = stage_outputs["contradictions"]
+            report = stage_outputs["report"]
+
+            conclusion_text = _extract_conclusion_section(report)
+            conclusion_id = repository.add_conclusion(
+                question_id, conclusion_text, [f["id"] for f in findings]
+            )
+
+            filepath = save_report(report, topic)
+            logger.info("Report saved to: %s", filepath)
+
+            self._index_for_reuse(question_id, topic, conclusion_text, findings, conclusion_id)
+            repository.set_run_status(run_id, "succeeded")
+            emit_event("run_finished")
+
+            return {
+                "report": report,
+                "question_id": question_id,
+                "run_id": run_id,
+                "conclusion_id": conclusion_id,
+                "reused": False,
+                "saved_to": filepath,
+                "contradictions_count": len(contradictions),
+                "findings_count": len(findings),
+            }
+        finally:
+            clear_run()
+
+    def _collect_attempt_history(self) -> List[dict]:
+        ctx = current_run()
+        if ctx is None:
+            return []
+        return [e.model_dump(mode="json") for e in ctx.stage_events if e.event_type == "llm_attempt"]
+
+    def _load_resumable_state(self, question_id: int) -> dict:
+        question = repository.get_question(question_id)
+        return {
+            "sub_questions": question["sub_questions"] if question else [],
+            "findings": repository.get_findings_list(question_id),
+            "contradictions": repository.get_contradictions(question_id),
+        }
+
+    def _first_unresolved_stage_index(self, run_id: str) -> int:
+        states = {s["stage"]: s["state"] for s in repository.get_stage_states(run_id)}
+        resolved = {"succeeded", "degraded", "skipped_cached"}
+        for i, stage in enumerate(self.STAGES):
+            if states.get(stage) not in resolved:
+                return i
+        return len(self.STAGES)
+
+    # ── Stage dispatch wrappers ─────────────────────────────────────
+    # Each wrapper adapts one _run_*_stage method's own (differing) signature to
+    # the uniform (topic, question_id, stage_outputs) -> stage_outputs shape the
+    # dispatch loop above calls through self._STAGE_RUNNERS.
+
+    def _dispatch_planner(self, topic, question_id, stage_outputs):
         sub_questions = self._run_planning_stage(topic)
         repository.set_sub_questions(question_id, sub_questions)
+        stage_outputs["sub_questions"] = sub_questions
+        return stage_outputs
 
-        findings = self._run_research_stage(question_id, sub_questions)
-        contradictions = self._run_comparison_stage(question_id, findings)
-        findings = self._run_classification_stage(question_id, findings)
+    def _dispatch_researcher(self, topic, question_id, stage_outputs):
+        findings, degraded = self._run_research_stage(question_id, stage_outputs["sub_questions"])
+        stage_outputs["findings"] = findings
+        stage_outputs["_degraded"] = degraded
+        return stage_outputs
 
-        report = self._run_writing_stage(topic, findings, contradictions)
+    def _dispatch_evidence_comparator(self, topic, question_id, stage_outputs):
+        contradictions = self._run_comparison_stage(question_id, stage_outputs["findings"])
+        stage_outputs["contradictions"] = contradictions
+        return stage_outputs
 
-        conclusion_text = _extract_conclusion_section(report)
-        conclusion_id = repository.add_conclusion(
-            question_id, conclusion_text, [f["id"] for f in findings]
-        )
+    def _dispatch_classifier(self, topic, question_id, stage_outputs):
+        findings = self._run_classification_stage(question_id, stage_outputs["findings"])
+        stage_outputs["findings"] = findings
+        return stage_outputs
 
-        filepath = save_report(report, topic)
-        logger.info("Report saved to: %s", filepath)
-
-        self._index_for_reuse(question_id, topic, conclusion_text, findings, conclusion_id)
-
-        return {
-            "report": report,
-            "question_id": question_id,
-            "conclusion_id": conclusion_id,
-            "reused": False,
-            "saved_to": filepath,
-            "contradictions_count": len(contradictions),
-            "findings_count": len(findings),
-        }
+    def _dispatch_writer(self, topic, question_id, stage_outputs):
+        report = self._run_writing_stage(topic, stage_outputs["findings"], stage_outputs["contradictions"])
+        stage_outputs["report"] = report
+        return stage_outputs
 
     # ── Stages ──────────────────────────────────────────────────────
 
@@ -242,14 +361,14 @@ class ResearchCrew:
             result = _run_single_task_crew(planner, plan_task)
         except Exception as e:
             logger.error("Planner stage failed: %s", e)
-            raise PipelineStageError("planner", str(e)) from e
+            raise PipelineStageError("planner", str(e), classify_provider_exception(e)) from e
 
         sub_questions = _parse_sub_questions(str(result))
         if not sub_questions:
-            raise PipelineStageError("planner", "no sub-questions were produced")
+            raise PipelineStageError("planner", "no sub-questions were produced", ErrorCode.SCHEMA_VALIDATION_FAILED)
         return sub_questions
 
-    def _run_research_stage(self, question_id: int, sub_questions: List[str]) -> List[dict]:
+    def _run_research_stage(self, question_id: int, sub_questions: List[str]) -> Tuple[List[dict], bool]:
         """
         Runs one small Researcher call per sub-question rather than one call
         covering all of them. A single call asking a local 8B model to search,
@@ -278,7 +397,7 @@ class ResearchCrew:
                 except Exception as e:
                     if _is_provider_unavailable_error(e):
                         logger.error("Researcher stage failed (provider unavailable): %s", e)
-                        raise PipelineStageError("researcher", str(e)) from e
+                        raise PipelineStageError("researcher", str(e), classify_provider_exception(e)) from e
                     last_error = e
                     logger.warning(
                         "Researcher call for sub-question %r raised an error "
@@ -331,10 +450,13 @@ class ResearchCrew:
 
         if not any_succeeded:
             raise PipelineStageError(
-                "researcher", "no sub-question produced a parseable finding"
+                "researcher", "no sub-question produced a parseable finding",
+                ErrorCode.SCHEMA_VALIDATION_FAILED,
             )
 
-        return repository.get_findings_list(question_id)
+        findings = repository.get_findings_list(question_id)
+        degraded = any(f["source_url"] == "none" for f in findings)
+        return findings, degraded
 
     def _run_comparison_stage(self, question_id: int, findings: List[dict]) -> List[dict]:
         comparator = get_evidence_comparator()
@@ -344,7 +466,7 @@ class ResearchCrew:
             result = _run_single_task_crew(comparator, compare_task)
         except Exception as e:
             logger.error("EvidenceComparator stage failed: %s", e)
-            raise PipelineStageError("evidence_comparator", str(e)) from e
+            raise PipelineStageError("evidence_comparator", str(e), classify_provider_exception(e)) from e
 
         from tasks.schemas import ComparisonOutput
 
@@ -370,7 +492,7 @@ class ResearchCrew:
             result = _run_single_task_crew(classifier, classify_task)
         except Exception as e:
             logger.error("Classifier stage failed: %s", e)
-            raise PipelineStageError("classifier", str(e)) from e
+            raise PipelineStageError("classifier", str(e), classify_provider_exception(e)) from e
 
         from tasks.schemas import ClassificationOutput
 
@@ -392,7 +514,7 @@ class ResearchCrew:
             result = _run_single_task_crew(writer, write_task)
         except Exception as e:
             logger.error("Writer stage failed: %s", e)
-            raise PipelineStageError("writer", str(e)) from e
+            raise PipelineStageError("writer", str(e), classify_provider_exception(e)) from e
         return str(result)
 
     def _index_for_reuse(self, question_id, topic, conclusion_text, findings, conclusion_id):
