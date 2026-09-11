@@ -251,7 +251,47 @@ After generating a report, the scoring module (`eval/scorer.py`) uses an isolate
 2. **Coverage Score (35% Weight)**: Evaluates depth, breadth, and how comprehensively sub-questions were answered.
 3. **Clarity Score (25% Weight)**: Examines spelling, layout structure, logic, and readability.
 
-The scores are aggregated into a weighted average total score out of 10.0, along with direct feedback from the judge model. This step is intentionally separate from the Evidence Comparator/Classifier stages — it grades the finished report, not the intermediate findings.
+The scores are aggregated into a weighted average total score out of 10.0, along with direct feedback from the judge model. This step is intentionally separate from the Evidence Comparator/Classifier stages — it grades the finished report, not the intermediate findings. A judge response that fails to parse never falls back to a silent `0.0` — `EvalResult.parse_failed` is set instead and `total` is `None`, so a parse failure can't be mistaken for the judge's worst possible score.
+
+---
+
+## 🧪 Golden-Set Eval Harness
+
+[![Eval Harness](https://github.com/SpandanNagale/Crewai-Research-pipeline/actions/workflows/eval.yml/badge.svg)](https://github.com/SpandanNagale/Crewai-Research-pipeline/actions/workflows/eval.yml)
+
+`eval/golden/golden_set.json` is 28 fixed cases spanning four categories — no hand-authored "gold answer" text is stored for the research categories; groundedness, citation precision, and sub-question coverage are computed from each run's own instrumentation (`eval/metrics.py`), not graded against a pre-written reference:
+
+| Category | Count | What it checks |
+| :--- | ---: | :--- |
+| `easy` | 8 | Well-documented topics — the pipeline's baseline behavior. |
+| `ambiguous` | 6 | Genuinely contested questions with no single correct answer. |
+| `low_resource` | 3 | Niche topics where search results are sparse — exercises degraded/unresolved handling. |
+| `adversarial` | 8 | One per input-guardrail rule (too short/long, gibberish, injection, role-override, system-prompt extraction, code-gen, PII). Verified against the real guardrail: every entry trips its intended rule with zero false positives on the benign entries. |
+| `contradiction_fixture` | 3 | Two deliberately conflicting findings seeded directly into the DB — asserts the Evidence Comparator flags them. |
+
+Run it yourself against a running instance:
+```bash
+uvicorn app:app --port 8000 &
+python -m eval.harness --base-url http://127.0.0.1:8000
+```
+This writes `eval/results.json` and `eval/results.md`. Only the `adversarial` and `contradiction_fixture` categories are pass/fail and gate the exit code (1 on any failure) — `easy`/`ambiguous`/`low_resource` are statistical (mean groundedness, citation precision, sub-question coverage, cache hit rate, fallback rate, cost per run, p50/p95 stage latency) and are **reported, not gated**, since there is no verified historical baseline yet to regress against; gating on a threshold with no real prior data would just be a fabricated number.
+
+**CI** (`.github/workflows/eval.yml`) runs the harness on every push to `main` — there's no deployed instance yet (a later phase), so the workflow starts the FastAPI app inside the runner itself. `config/agents_config.yaml`'s per-agent provider list is built eagerly in full (`llm/router.py::get_deployments`), so all four cloud provider keys must be set as repo secrets — `OLLAMA_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY` — for the run to happen at all; `SEARCH_PROVIDER` is pinned to the free, keyless DuckDuckGo backend so a fifth key isn't required. If those secrets aren't configured, the job skips the live run with a warning rather than failing the build.
+
+### Statistics
+
+`eval/stats.py` provides bootstrap confidence intervals, paired bootstrap (for comparing two runs), Spearman rank correlation, and quadratic-weighted Cohen's kappa — the same methods [SpandanNagale/Assay](https://github.com/SpandanNagale/Assay)'s `lib/stats` uses for its own eval harness. Assay itself is a TypeScript/Next.js web app, not a Python package, so there's nothing to `pip install`; this ports the specific formulas rather than inventing different statistics from scratch.
+
+### Judge calibration — pending
+
+"An uncalibrated LLM judge is a vibe with a decimal point." `eval/calibrate.py` measures how well the judge (`eval/scorer.py`) agrees with a human rater on the same reports, via weighted Cohen's kappa and Spearman correlation. **No number is reported here yet** — that requires real hand-labeling, which this tool can't fabricate on your behalf:
+
+```bash
+python -m eval.calibrate label --reports-dir outputs   # blind 1-5 scoring, resumable
+python -m eval.calibrate score  --labels eval/calibration_labels.json
+```
+
+Once you've run both against ~30 of your own saved reports, drop the resulting kappa/correlation numbers in here.
 
 ---
 
@@ -270,6 +310,7 @@ Test count has grown alongside the production-upgrade phases (each phase's own c
 | 3 | Real SSE streaming | 66 |
 | 4 | Guardrails + groundedness critic stage | 90 |
 | 5 | Caching (search, sub-question semantic, LLM response) | 99 |
+| 6 | Golden-set eval harness, stats primitives, judge calibration, defect #8 fix | 141 |
 
 ---
 

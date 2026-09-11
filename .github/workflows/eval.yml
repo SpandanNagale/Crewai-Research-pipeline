@@ -1,0 +1,76 @@
+name: Eval Harness
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# There is no deployed instance yet (that's a later phase) -- this starts the
+# FastAPI app inside the runner itself and points the harness at localhost.
+# config/agents_config.yaml's model_groups build every listed deployment
+# eagerly for every agent alias (llm/router.py::get_deployments), so all
+# four cloud provider keys are required, not just one -- SEARCH_PROVIDER is
+# pinned to the free, keyless DuckDuckGo backend to avoid needing a fifth.
+permissions:
+  contents: write
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    env:
+      SEARCH_PROVIDER: duckduckgo
+      OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Check required provider secrets are configured
+        id: keys
+        run: |
+          if [ -z "$OLLAMA_API_KEY" ] || [ -z "$GROQ_API_KEY" ] || [ -z "$OPENROUTER_API_KEY" ] || [ -z "$GEMINI_API_KEY" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::OLLAMA_API_KEY / GROQ_API_KEY / OPENROUTER_API_KEY / GEMINI_API_KEY are not all set as repo secrets -- skipping the live eval run. See README's Evaluation section."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Start API server
+        if: steps.keys.outputs.configured == 'true'
+        run: |
+          nohup python -m uvicorn app:app --port 8000 > uvicorn.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8000/health && exit 0
+            sleep 2
+          done
+          echo "Server never became healthy:"; cat uvicorn.log; exit 1
+
+      - name: Run eval harness
+        if: steps.keys.outputs.configured == 'true'
+        run: python -m eval.harness --base-url http://127.0.0.1:8000
+
+      - name: Upload results artifact
+        if: always() && steps.keys.outputs.configured == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results
+          path: |
+            eval/results.json
+            eval/results.md
+
+      - name: Commit results back to main
+        if: always() && steps.keys.outputs.configured == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add eval/results.json eval/results.md
+          git diff --cached --quiet || git commit -m "chore: update eval harness results [skip ci]"
+          git push
