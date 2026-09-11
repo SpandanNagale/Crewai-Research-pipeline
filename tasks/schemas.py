@@ -1,5 +1,5 @@
 """Pydantic models used as `output_pydantic` schemas for structured task outputs."""
-from typing import List
+from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -35,3 +35,15 @@ class ClassificationItem(BaseModel):
 
 class ClassificationOutput(BaseModel):
     items: List[ClassificationItem] = Field(default_factory=list)
+
+
+class ClaimGroundingItem(BaseModel):
+    claim_text: str = Field(description="One distinct factual claim from the report.")
+    grounded: bool = Field(description="True if a listed finding supports this claim.")
+    supporting_finding_id: Optional[int] = Field(default=None, description="The finding id that supports it, if grounded.")
+    objection: Optional[str] = Field(default=None, description="Why this claim is not grounded, if not.")
+
+
+class GroundednessOutput(BaseModel):
+    overall_score: float = Field(ge=0.0, le=1.0, description="Fraction of claims that are grounded.")
+    claims: List[ClaimGroundingItem] = Field(default_factory=list)

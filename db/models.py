@@ -8,7 +8,7 @@ conclusion can always be walked back to the raw sources that support it.
 """
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
@@ -104,3 +104,15 @@ class PipelineStageState(Base):
     detail = Column(Text, nullable=True)
     started_at = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)
+
+
+class ClaimGrounding(Base):
+    __tablename__ = "claim_groundings"
+
+    id = Column(Integer, primary_key=True)
+    question_id = Column(Integer, ForeignKey("research_questions.id"), nullable=False)
+    claim_text = Column(Text, nullable=False)
+    grounded = Column(Boolean, nullable=False)
+    supporting_finding_id = Column(Integer, ForeignKey("findings.id"), nullable=True)
+    objection = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

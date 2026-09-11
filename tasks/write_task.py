@@ -11,7 +11,14 @@ def _group_by_subquestion(findings: List[dict]) -> Dict[str, List[dict]]:
     return grouped
 
 
-def get_write_task(writer: Agent, topic: str, findings: List[dict], contradictions: List[dict]) -> Task:
+def get_write_task(
+    writer: Agent,
+    topic: str,
+    findings: List[dict],
+    contradictions: List[dict],
+    unresolved_sub_questions: List[str] = None,
+    feedback: List[str] = None,
+) -> Task:
     grouped = _group_by_subquestion(findings)
 
     section_blocks = []
@@ -32,6 +39,28 @@ def get_write_task(writer: Agent, topic: str, findings: List[dict], contradictio
     else:
         contradictions_block = "None detected."
 
+    unresolved_sub_questions = unresolved_sub_questions or []
+    if unresolved_sub_questions:
+        unresolved_block = (
+            "\n\nThe following sub-questions could NOT be resolved (no findings were "
+            "extracted for them after retrying) — explicitly list them in a "
+            "'Unresolved Questions' subsection under Findings. Do NOT fabricate "
+            "content for them:\n" + "\n".join(f"- {q}" for q in unresolved_sub_questions)
+        )
+    else:
+        unresolved_block = ""
+
+    feedback = feedback or []
+    if feedback:
+        feedback_block = (
+            "\n\nA prior draft of this report was reviewed and found to contain "
+            "unsupported claims. Fix these specific issues in this draft — either "
+            "ground the claim in a listed finding or remove it:\n"
+            + "\n".join(f"- {f}" for f in feedback)
+        )
+    else:
+        feedback_block = ""
+
     return Task(
         description=(
             f'Write a complete markdown research report on: "{topic}"\n\n'
@@ -39,9 +68,10 @@ def get_write_task(writer: Agent, topic: str, findings: List[dict], contradictio
             "finding was already extracted from a source and stored in the "
             "database, do not invent new facts or sources. Each finding shows "
             "its database id, category, and source.\n\n"
-            f"FINDINGS (grouped by sub-question):\n{findings_block}\n\n"
+            f"FINDINGS (grouped by sub-question):\n{findings_block}{unresolved_block}\n\n"
             f"FLAGGED CONTRADICTIONS between findings (from the "
-            f"EvidenceComparator stage):\n{contradictions_block}\n\n"
+            f"EvidenceComparator stage):\n{contradictions_block}"
+            f"{feedback_block}\n\n"
             "Structure the report as:\n"
             "1. **Executive Summary** (3-5 sentences)\n"
             "2. **Findings** (one section per sub-question, citing sources)\n"

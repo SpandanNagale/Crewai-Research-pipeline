@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from db.models import (
-    Conclusion, Contradiction, Finding, PipelineRun, PipelineStageState,
+    ClaimGrounding, Conclusion, Contradiction, Finding, PipelineRun, PipelineStageState,
     ResearchQuestion, Source,
 )
 from db.session import get_session
@@ -316,6 +316,44 @@ def get_stage_states(run_id: str) -> List[dict]:
                 "detail": r.detail,
                 "started_at": r.started_at.isoformat() if r.started_at else None,
                 "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+            }
+            for r in rows
+        ]
+
+
+def replace_claim_groundings(question_id: int, items: List[dict]) -> None:
+    """
+    Clears any prior grounding results for this question (a bounded rewrite
+    loop calls this once per critique pass) and inserts the latest set.
+    """
+    with get_session() as session:
+        session.query(ClaimGrounding).filter(ClaimGrounding.question_id == question_id).delete()
+        for item in items:
+            session.add(ClaimGrounding(
+                question_id=question_id,
+                claim_text=item["claim_text"],
+                grounded=item["grounded"],
+                supporting_finding_id=item.get("supporting_finding_id"),
+                objection=item.get("objection"),
+            ))
+
+
+def get_claim_groundings(question_id: int) -> List[dict]:
+    with get_session() as session:
+        rows = (
+            session.query(ClaimGrounding)
+            .filter(ClaimGrounding.question_id == question_id)
+            .order_by(ClaimGrounding.id)
+            .all()
+        )
+        return [
+            {
+                "id": r.id,
+                "claim_text": r.claim_text,
+                "grounded": r.grounded,
+                "supporting_finding_id": r.supporting_finding_id,
+                "objection": r.objection,
+                "created_at": r.created_at.isoformat(),
             }
             for r in rows
         ]
