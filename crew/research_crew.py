@@ -8,12 +8,14 @@ from crewai import Crew, Process
 from pydantic import BaseModel
 
 from agents.classifier import get_classifier
+from agents.critic import get_critic
 from agents.evidence_comparator import get_evidence_comparator
 from agents.planner import get_planner
 from agents.researcher import get_researcher
 from agents.writer import get_writer
 from db import repository
 from db.session import init_db
+from guardrails.input_guardrail import GuardrailBlockedError, validate_topic
 from llm.router_llm import classify_provider_exception
 from memory.reuse import KnowledgeReuseChecker
 from observability.context import clear_run, current_run, emit_event, set_stage, start_run
@@ -21,10 +23,14 @@ from observability.errors import ErrorCode
 from observability.node_state import NodeState
 from tasks.classify_task import get_classify_task
 from tasks.compare_task import get_compare_task
+from tasks.groundedness_task import get_groundedness_task
 from tasks.plan_task import get_plan_task
 from tasks.research_task import get_research_task
 from tasks.write_task import get_write_task
 from tools.file_tool import save_report
+
+GROUNDEDNESS_THRESHOLD = 0.7
+MAX_REWRITE_ATTEMPTS = 2
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +153,7 @@ def _extract_conclusion_section(report_markdown: str) -> str:
 
 
 class ResearchCrew:
-    STAGES = ["planner", "researcher", "evidence_comparator", "classifier", "writer"]
+    STAGES = ["planner", "researcher", "evidence_comparator", "classifier", "writer", "critic"]
 
     def __init__(self):
         init_db()
@@ -158,6 +164,7 @@ class ResearchCrew:
             "evidence_comparator": self._dispatch_evidence_comparator,
             "classifier": self._dispatch_classifier,
             "writer": self._dispatch_writer,
+            "critic": self._dispatch_critic,
         }
 
     def run(self, topic: str, force_rerun: bool = False) -> str:
@@ -175,6 +182,12 @@ class ResearchCrew:
         start_run(run_id)
         try:
             emit_event("run_started", message=f"topic={topic!r}")
+
+            try:
+                validate_topic(topic)
+            except GuardrailBlockedError as e:
+                emit_event("guardrail_fired", message=e.reason, detail=e.reason)
+                raise PipelineStageError("input", e.reason, ErrorCode.GUARDRAIL_BLOCKED)
 
             if resume_question_id is None:
                 if not force_rerun:
@@ -246,6 +259,7 @@ class ResearchCrew:
                 "saved_to": filepath,
                 "contradictions_count": len(contradictions),
                 "findings_count": len(findings),
+                "groundedness_score": stage_outputs.get("groundedness_score"),
             }
         finally:
             clear_run()
@@ -257,11 +271,16 @@ class ResearchCrew:
         return [e.model_dump(mode="json") for e in ctx.stage_events if e.event_type == "llm_attempt"]
 
     def _load_resumable_state(self, question_id: int) -> dict:
+        # unresolved_sub_questions isn't DB-backed (unlike findings/contradictions),
+        # so a resume that skips past a succeeded researcher stage won't recover the
+        # original run's unresolved list -- an accepted small gap, not a correctness
+        # issue (the report just won't repeat the "Unresolved Questions" note).
         question = repository.get_question(question_id)
         return {
             "sub_questions": question["sub_questions"] if question else [],
             "findings": repository.get_findings_list(question_id),
             "contradictions": repository.get_contradictions(question_id),
+            "unresolved_sub_questions": [],
         }
 
     def _first_unresolved_stage_index(self, run_id: str) -> int:
@@ -284,8 +303,9 @@ class ResearchCrew:
         return stage_outputs
 
     def _dispatch_researcher(self, topic, question_id, stage_outputs):
-        findings, degraded = self._run_research_stage(question_id, stage_outputs["sub_questions"])
+        findings, degraded, unresolved = self._run_research_stage(question_id, stage_outputs["sub_questions"])
         stage_outputs["findings"] = findings
+        stage_outputs["unresolved_sub_questions"] = unresolved
         stage_outputs["_degraded"] = degraded
         return stage_outputs
 
@@ -300,8 +320,42 @@ class ResearchCrew:
         return stage_outputs
 
     def _dispatch_writer(self, topic, question_id, stage_outputs):
-        report = self._run_writing_stage(topic, stage_outputs["findings"], stage_outputs["contradictions"])
+        report = self._run_writing_stage(
+            topic, stage_outputs["findings"], stage_outputs["contradictions"],
+            stage_outputs.get("unresolved_sub_questions", []),
+        )
         stage_outputs["report"] = report
+        return stage_outputs
+
+    def _dispatch_critic(self, topic, question_id, stage_outputs):
+        """
+        Groundedness gate: score every claim in the report against this
+        question's DB findings, and if the score is below threshold, feed the
+        specific objections back to the Writer for a bounded rewrite
+        (max MAX_REWRITE_ATTEMPTS extra Writer calls) before giving up.
+        """
+        report = stage_outputs["report"]
+        findings = stage_outputs["findings"]
+        contradictions = stage_outputs["contradictions"]
+        unresolved = stage_outputs.get("unresolved_sub_questions", [])
+
+        parsed = self._run_groundedness_check(report, findings)
+        attempts = 0
+        while parsed.overall_score < GROUNDEDNESS_THRESHOLD and attempts < MAX_REWRITE_ATTEMPTS:
+            objections = [c.objection for c in parsed.claims if not c.grounded and c.objection]
+            emit_event(
+                "guardrail_fired",
+                message=f"groundedness {parsed.overall_score:.2f} below threshold, rewriting",
+                detail="; ".join(objections) or "no specific objections returned",
+            )
+            report = self._run_writing_stage(topic, findings, contradictions, unresolved, feedback=objections)
+            parsed = self._run_groundedness_check(report, findings)
+            attempts += 1
+
+        repository.replace_claim_groundings(question_id, [c.model_dump() for c in parsed.claims])
+        stage_outputs["report"] = report
+        stage_outputs["groundedness_score"] = parsed.overall_score
+        stage_outputs["_degraded"] = parsed.overall_score < GROUNDEDNESS_THRESHOLD
         return stage_outputs
 
     # ── Stages ──────────────────────────────────────────────────────
@@ -368,7 +422,7 @@ class ResearchCrew:
             raise PipelineStageError("planner", "no sub-questions were produced", ErrorCode.SCHEMA_VALIDATION_FAILED)
         return sub_questions
 
-    def _run_research_stage(self, question_id: int, sub_questions: List[str]) -> Tuple[List[dict], bool]:
+    def _run_research_stage(self, question_id: int, sub_questions: List[str]) -> Tuple[List[dict], bool, List[str]]:
         """
         Runs one small Researcher call per sub-question rather than one call
         covering all of them. A single call asking a local 8B model to search,
@@ -376,16 +430,21 @@ class ResearchCrew:
         out of steam mid-generation; per-sub-question calls keep each ask (and
         each JSON response) small enough to complete. A sub-question whose
         response fails to parse (or the agent returns an empty answer, e.g.
-        after hitting its tool-call iteration cap) gets a placeholder finding
-        after a retry, instead of aborting the whole run. A genuine
-        provider-availability error (bad/missing key, rate limit, timeout,
-        unreachable endpoint) still propagates immediately as a
-        PipelineStageError — retrying that would just waste time.
+        after hitting its tool-call iteration cap) is recorded as unresolved
+        after a retry, instead of aborting the whole run -- and instead of
+        being inserted as a fake Finding with source "none" (defect #7): an
+        unresolved sub-question never reaches the Writer as if it were real
+        content, it's reported separately (see get_write_task's
+        unresolved_sub_questions param). A genuine provider-availability error
+        (bad/missing key, rate limit, timeout, unreachable endpoint) still
+        propagates immediately as a PipelineStageError — retrying that would
+        just waste time.
         """
         from tasks.schemas import ResearchOutput
 
         researcher = get_researcher()
         any_succeeded = False
+        unresolved: List[str] = []
 
         for sub_question in sub_questions:
             parsed = None
@@ -432,21 +491,11 @@ class ResearchCrew:
                     )
             else:
                 logger.warning(
-                    "Giving up on sub-question %r after retries, recording a "
-                    "placeholder finding: %s",
+                    "Giving up on sub-question %r after retries, marking unresolved: %s",
                     sub_question,
                     last_error,
                 )
-                source_id = repository.get_or_create_source(
-                    question_id, "none", "Extraction failed"
-                )
-                repository.add_finding(
-                    question_id,
-                    source_id,
-                    "The Researcher agent's response for this sub-question could not "
-                    "be parsed after retrying.",
-                    sub_question,
-                )
+                unresolved.append(sub_question)
 
         if not any_succeeded:
             raise PipelineStageError(
@@ -455,8 +504,8 @@ class ResearchCrew:
             )
 
         findings = repository.get_findings_list(question_id)
-        degraded = any(f["source_url"] == "none" for f in findings)
-        return findings, degraded
+        degraded = bool(unresolved)
+        return findings, degraded, unresolved
 
     def _run_comparison_stage(self, question_id: int, findings: List[dict]) -> List[dict]:
         comparator = get_evidence_comparator()
@@ -507,15 +556,34 @@ class ResearchCrew:
 
         return repository.get_findings_list(question_id)
 
-    def _run_writing_stage(self, topic: str, findings: List[dict], contradictions: List[dict]) -> str:
+    def _run_writing_stage(
+        self,
+        topic: str,
+        findings: List[dict],
+        contradictions: List[dict],
+        unresolved_sub_questions: Optional[List[str]] = None,
+        feedback: Optional[List[str]] = None,
+    ) -> str:
         writer = get_writer()
-        write_task = get_write_task(writer, topic, findings, contradictions)
+        write_task = get_write_task(writer, topic, findings, contradictions, unresolved_sub_questions, feedback)
         try:
             result = _run_single_task_crew(writer, write_task)
         except Exception as e:
             logger.error("Writer stage failed: %s", e)
             raise PipelineStageError("writer", str(e), classify_provider_exception(e)) from e
         return str(result)
+
+    def _run_groundedness_check(self, report: str, findings: List[dict]):
+        from tasks.schemas import GroundednessOutput
+
+        critic = get_critic()
+        task = get_groundedness_task(critic, report, findings)
+        try:
+            result = _run_single_task_crew(critic, task)
+        except Exception as e:
+            logger.error("Critic stage failed: %s", e)
+            raise PipelineStageError("critic", str(e), classify_provider_exception(e)) from e
+        return _extract_pydantic(result, GroundednessOutput, "critic")
 
     def _index_for_reuse(self, question_id, topic, conclusion_text, findings, conclusion_id):
         try:
