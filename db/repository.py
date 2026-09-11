@@ -3,9 +3,13 @@ Repository layer for the traceability DB. Every function opens its own
 session and returns plain dicts/ints (never ORM objects), so callers never
 hit DetachedInstanceError once the session that produced the data is closed.
 """
+from datetime import datetime
 from typing import Dict, List, Optional
 
-from db.models import Conclusion, Contradiction, Finding, ResearchQuestion, Source
+from db.models import (
+    Conclusion, Contradiction, Finding, PipelineRun, PipelineStageState,
+    ResearchQuestion, Source,
+)
 from db.session import get_session
 
 
@@ -215,6 +219,106 @@ def get_trace(question_id: int) -> Optional[dict]:
         "conclusions": trace,
         "contradictions": get_contradictions(question_id),
     }
+
+
+_TERMINAL_STAGE_STATES = {"succeeded", "degraded", "failed", "not_reached", "skipped_cached"}
+
+
+def create_pipeline_run(run_id: str, question_id: Optional[int], topic: str) -> None:
+    with get_session() as session:
+        session.add(PipelineRun(run_id=run_id, question_id=question_id, topic=topic, status="running"))
+
+
+def reattach_pipeline_run(run_id: str, question_id: int) -> None:
+    """
+    Ensures a pipeline_runs row exists for run_id, linked to question_id --
+    used when resuming a run under the same run_id after a prior failed attempt.
+    """
+    with get_session() as session:
+        run = session.get(PipelineRun, run_id)
+        if run is None:
+            session.add(PipelineRun(run_id=run_id, question_id=question_id, topic="", status="running"))
+        else:
+            run.question_id = question_id
+            run.status = "running"
+            run.updated_at = datetime.utcnow()
+
+
+def set_run_status(run_id: str, status: str) -> None:
+    with get_session() as session:
+        run = session.get(PipelineRun, run_id)
+        if run is not None:
+            run.status = status
+            run.updated_at = datetime.utcnow()
+
+
+def set_stage_state(
+    run_id: str,
+    stage: str,
+    state: str,
+    detail: Optional[str] = None,
+    attempts: Optional[List[dict]] = None,
+) -> None:
+    """
+    Get-or-create by (run_id, stage): a stage transitions pending -> running ->
+    a terminal state on the same row, not a new row per transition.
+    """
+    with get_session() as session:
+        row = (
+            session.query(PipelineStageState)
+            .filter(PipelineStageState.run_id == run_id, PipelineStageState.stage == stage)
+            .first()
+        )
+        now = datetime.utcnow()
+        if row is None:
+            row = PipelineStageState(run_id=run_id, stage=stage, state=state, attempts=attempts or [])
+            session.add(row)
+        else:
+            row.state = state
+            if attempts is not None:
+                row.attempts = attempts
+        if detail is not None:
+            row.detail = detail
+        if state == "running":
+            row.started_at = now
+        elif state in _TERMINAL_STAGE_STATES:
+            row.finished_at = now
+
+
+def get_run(run_id: str) -> Optional[dict]:
+    with get_session() as session:
+        run = session.get(PipelineRun, run_id)
+        if run is None:
+            return None
+        return {
+            "run_id": run.run_id,
+            "question_id": run.question_id,
+            "topic": run.topic,
+            "status": run.status,
+            "created_at": run.created_at.isoformat(),
+            "updated_at": run.updated_at.isoformat(),
+        }
+
+
+def get_stage_states(run_id: str) -> List[dict]:
+    with get_session() as session:
+        rows = (
+            session.query(PipelineStageState)
+            .filter(PipelineStageState.run_id == run_id)
+            .order_by(PipelineStageState.id)
+            .all()
+        )
+        return [
+            {
+                "stage": r.stage,
+                "state": r.state,
+                "attempts": r.attempts or [],
+                "detail": r.detail,
+                "started_at": r.started_at.isoformat() if r.started_at else None,
+                "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+            }
+            for r in rows
+        ]
 
 
 def list_questions(limit: int = 50) -> List[dict]:

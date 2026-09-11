@@ -80,3 +80,27 @@ class Conclusion(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     question = relationship("ResearchQuestion", back_populates="conclusions")
+
+
+class PipelineRun(Base):
+    __tablename__ = "pipeline_runs"
+
+    run_id = Column(String, primary_key=True)
+    question_id = Column(Integer, ForeignKey("research_questions.id"), nullable=True)
+    topic = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="running")
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class PipelineStageState(Base):
+    __tablename__ = "pipeline_stage_states"
+
+    id = Column(Integer, primary_key=True)
+    run_id = Column(String, ForeignKey("pipeline_runs.run_id"), nullable=False)
+    stage = Column(String, nullable=False)
+    state = Column(String, nullable=False)
+    attempts = Column(JSON, default=list, nullable=False)
+    detail = Column(Text, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
