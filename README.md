@@ -1,9 +1,9 @@
-# NeuroSearch: Enterprise Multi-Agent Research & Evaluation Pipeline
+# Research Pipeline
 
-NeuroSearch is an autonomous, multi-agent research pipeline powered by **CrewAI** and pluggable Large Language Models (local **Gemma** via **Ollama** by default, with optional **Ollama Cloud** and **Groq** backends). A team of specialized AI agents plans, researches, cross-checks, classifies, and writes comprehensive, well-cited reports on any topic — and every finding, source, contradiction, and conclusion is persisted to a structured SQLite database so the whole reasoning chain stays traceable and reusable.
+A multi-agent research pipeline powered by **CrewAI** and pluggable Large Language Models (local **Gemma** via **Ollama** by default, with optional **Ollama Cloud**, **Groq**, **OpenRouter**, and **Gemini** backends). A team of specialized AI agents plans, researches, cross-checks, classifies, and writes comprehensive, well-cited reports on any topic — and every finding, source, contradiction, and conclusion is persisted to a structured SQLite database so the whole reasoning chain stays traceable and reusable.
 
 This project features three distinct interfaces:
-1. 🖥️ **Live surveillance Web UI** (Flask-based dashboard with real-time agent output streaming via Server-Sent Events)
+1. 🖥️ **Web dashboard** (Next.js — `frontend/`; three panes: run config, the live pipeline via SSE, the finished report)
 2. ⚡ **Headless REST API** (FastAPI backend with streaming, traceability, and knowledge-search endpoints)
 3. ⌨️ **Command-Line Interface** (CLI script for terminal operation)
 
@@ -86,12 +86,14 @@ research-pipeline/
 ├── config/                     # Settings and parameters
 │   ├── settings.py                # App settings & dotenv loader
 │   └── agents_config.yaml         # Agent roles/goals/backstories + per-agent LLM overrides
-├── templates/ / static/        # Flask Web UI assets
+├── observability/               # Event bus, node states, error taxonomy, Langfuse sink
+├── guardrails/                  # Input + tool-output guardrails
+├── eval/                        # Golden-set harness, stats, judge calibration (see below)
+├── frontend/                    # Next.js web dashboard (see frontend/README.md)
 ├── outputs/                    # Finished research reports (markdown)
 ├── research.db                 # SQLite traceability DB (gitignored, created on first run)
 ├── chroma_db/                  # ChromaDB vector store (gitignored)
-├── app.py                      # FastAPI REST API
-├── flask_app.py                # Flask Web UI server
+├── app.py                      # FastAPI REST API (API-only; the UI lives in frontend/)
 ├── main.py                     # Command-line interface
 ├── requirements.txt            # Dependency declarations
 ├── .env.example                # Documented template for all environment variables
@@ -104,7 +106,8 @@ research-pipeline/
 
 ### 1. Prerequisites
 - **Python 3.10** or higher.
-- **Ollama** installed and running locally — this is the zero-cost default; no cloud API key is required to run NeuroSearch end-to-end.
+- **Ollama** installed and running locally — this is the zero-cost default; no cloud API key is required to run the pipeline end-to-end.
+- **Node.js 20+** if you want the web dashboard (`frontend/`); the CLI and REST API need only Python.
 
 ### 2. Configure Local LLM
 ```bash
@@ -140,17 +143,21 @@ python main.py "The impact of AI on drug discovery in 2024" --eval
 - `--eval` scores the final report after generation.
 - `--force` skips the knowledge-reuse check and always runs fresh research, even if a near-duplicate question already exists in the DB.
 
-### B. Interactive Web UI (Flask)
+### B. Web Dashboard (Next.js)
 ```bash
-python flask_app.py
+uvicorn app:app --reload --port 8000          # backend, in one terminal
+cd frontend && npm install && npm run dev     # frontend, in another
 ```
-Open **`http://127.0.0.1:5000`**, type a topic, and watch the live agent trace stream in.
+Open **`http://localhost:3000`**. See `frontend/README.md` for details, including
+the one-click failure demo (fires the input guardrail live, no LLM calls).
+If the frontend runs on a different origin, set `CORS_ALLOWED_ORIGINS` on the
+backend (see `.env.example`) to match.
 
 ### C. FastAPI Backend REST API
 ```bash
 uvicorn app:app --reload --port 8000
 ```
-Interactive docs at **`http://127.0.0.1:8000/docs`**.
+Interactive docs at **`http://127.0.0.1:8000/docs`**. This is API-only — no HTML is served here; use the dashboard above or call the endpoints directly.
 
 | Endpoint | Description |
 | :--- | :--- |
@@ -160,6 +167,8 @@ Interactive docs at **`http://127.0.0.1:8000/docs`**.
 | `GET /jobs/{job_id}` | Poll status/result of an async job (`pending` / `running` / `done` / `failed`). |
 | `GET /questions/{id}/trace` | Full traceability chain: conclusion(s) → the findings each was derived from → their sources. |
 | `GET /questions/{id}/contradictions` | All contradictions flagged for a question. |
+| `GET /questions/{id}/groundedness` | Per-claim groundedness from the Critic's last check, plus the pass/fail `threshold`. |
+| `GET /health/providers` | Live status per (agent, provider) deployment — the dashboard's status dots. |
 | `GET /knowledge/search?q=` | Semantic search over every past finding/conclusion. |
 | `POST /eval` | Score an existing report without re-running the pipeline. |
 
@@ -217,7 +226,7 @@ planner:
 ```
 Any agent without an override falls back to the global `LLM_PROVIDER` / `LLM_MODEL` in `.env`.
 
-**If a provider becomes unavailable** (auth error, timeout, rate limit), the pipeline does **not** silently return an empty report: the failing stage raises a `PipelineStageError` naming the stage and the underlying error, the API returns `502` with that detail, and the CLI/Flask paths surface the same message. There is no automatic cross-provider fallback for the LLM (unlike search, below) — switch `LLM_PROVIDER` in `.env` or fix the credentials and re-run.
+**If a provider becomes unavailable** (auth error, timeout, rate limit), the pipeline does **not** silently return an empty report: the failing stage raises a `PipelineStageError` naming the stage and the underlying error, the API returns `502` with that detail, and the CLI surfaces the same message. There is no automatic cross-provider fallback for the LLM (unlike search, below) — switch `LLM_PROVIDER` in `.env` or fix the credentials and re-run.
 
 ---
 
@@ -330,6 +339,7 @@ Test count has grown alongside the production-upgrade phases (each phase's own c
 | 5 | Caching (search, sub-question semantic, LLM response) | 99 |
 | 6 | Golden-set eval harness, stats primitives, judge calibration, defect #8 fix | 141 |
 | 7 | Langfuse tracing (trace/span/generation mapping, trace URL, eval score attach) | 170 |
+| 8 | Next.js frontend, API-only backend, UTC-timestamp fix | 172 |
 
 ---
 
