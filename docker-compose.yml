@@ -1,0 +1,44 @@
+# Reproducible local runs (build-prompt Phase 9's requirement) -- not a
+# production deployment topology. In production the frontend deploys to
+# Vercel and the backend to Render/HF Spaces (see README's Deployment
+# section); this just brings both up together against a real .env for
+# local development or a demo.
+services:
+  backend:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      CORS_ALLOWED_ORIGINS: http://localhost:3000
+      # research.db lives wherever DATABASE_URL points (default: the repo
+      # root) -- redirect it into the mounted volume below. chroma_db/'s
+      # path is hardcoded (memory/vector_store.py), so it's mounted directly.
+      DATABASE_URL: sqlite:////app/data/research.db
+    volumes:
+      # Persist across `docker compose down`/restarts -- see Dockerfile and
+      # README's Deployment section on why this (not managed Postgres/a
+      # hosted vector store) is the explicit persistence choice for now.
+      - research-db:/app/data
+      - chroma-db:/app/chroma_db
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  research-db:
+  chroma-db:

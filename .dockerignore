@@ -1,0 +1,15 @@
+.git
+.env
+*.db
+chroma_db/
+outputs/*
+!outputs/.gitkeep
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+node_modules/
+frontend/
+docs/
+.claude/
