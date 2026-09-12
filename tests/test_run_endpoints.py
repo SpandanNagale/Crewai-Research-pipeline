@@ -139,6 +139,23 @@ def test_stream_emits_named_sse_events_with_no_sentinel_strings(monkeypatch):
     assert "[DONE]" not in body
 
 
+def test_stream_done_payload_includes_trace_url_when_langfuse_configured(monkeypatch):
+    def fake_pipeline(topic, force_rerun, run_id):
+        return {
+            "report": "# hi", "run_id": run_id, "question_id": 1, "reused": False,
+            "saved_to": None, "contradictions_count": 0, "findings_count": 0,
+        }
+
+    monkeypatch.setattr("app._run_pipeline", fake_pipeline)
+    monkeypatch.setattr("app.langfuse_sink.get_trace_url", lambda run_id: f"https://fake.langfuse/traces/{run_id}")
+
+    with TestClient(app_module.app) as client:
+        with client.stream("POST", "/research/stream", json={"topic": "t"}) as response:
+            body = "".join(response.iter_text())
+
+    assert '"trace_url": "https://fake.langfuse/traces/' in body
+
+
 def test_stream_returns_error_event_on_pipeline_stage_error(monkeypatch):
     from crew.research_crew import PipelineStageError
     from observability.errors import ErrorCode
@@ -219,6 +236,32 @@ def test_research_response_includes_subquestion_coverage_counts(monkeypatch):
     body = response.json()
     assert body["sub_questions_count"] == 5
     assert body["unresolved_sub_questions_count"] == 2
+
+
+def test_research_response_trace_url_is_none_when_langfuse_unconfigured(monkeypatch):
+    def fake_pipeline(topic, force_rerun, run_id=None):
+        return {"report": "ok", "question_id": 1, "run_id": run_id, "reused": False}
+
+    monkeypatch.setattr("app._run_pipeline", fake_pipeline)
+
+    with TestClient(app_module.app) as client:
+        response = client.post("/research", json={"topic": "t"})
+
+    assert response.json()["trace_url"] is None
+
+
+def test_research_response_includes_trace_url_when_langfuse_configured(monkeypatch):
+    def fake_pipeline(topic, force_rerun, run_id=None):
+        return {"report": "ok", "question_id": 1, "run_id": run_id, "reused": False}
+
+    monkeypatch.setattr("app._run_pipeline", fake_pipeline)
+    monkeypatch.setattr("app.langfuse_sink.get_trace_url", lambda run_id: f"https://fake.langfuse/traces/{run_id}")
+
+    with TestClient(app_module.app) as client:
+        response = client.post("/research", json={"topic": "t"})
+
+    body = response.json()
+    assert body["trace_url"] == f"https://fake.langfuse/traces/{body['run_id']}"
 
 
 def test_get_groundedness_returns_404_for_unknown_question():

@@ -38,6 +38,7 @@ from eval.metrics import (
     stage_latency_percentiles, subquestion_coverage,
 )
 from eval.stats import bootstrap_ci
+from observability import langfuse_sink
 
 GOLDEN_SET_PATH = Path(__file__).parent / "golden" / "golden_set.json"
 RESULTS_JSON_PATH = Path(__file__).parent / "results.json"
@@ -134,6 +135,13 @@ def _run_research_case(client: httpx.Client, entry: dict) -> EntryResult:
             metrics["citation_precision"] = citation_precision(findings)
         except httpx.HTTPError:
             pass
+
+    run_id = done_payload.get("run_id")
+    if run_id and metrics.get("citation_precision") is not None:
+        # Groundedness is already attached to the trace by the pipeline itself
+        # (crew/research_crew.py's run_finished event) -- citation_precision is
+        # only known here, after the fact, from the harness's own trace lookup.
+        langfuse_sink.attach_score(run_id, "citation_precision", metrics["citation_precision"])
 
     return EntryResult(entry["id"], entry["category"], passed=None, metrics=metrics)
 

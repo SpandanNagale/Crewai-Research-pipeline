@@ -20,6 +20,7 @@ from llm.router import check_provider_health
 from memory.reuse import KnowledgeReuseChecker
 from observability.bus import EventBus
 from observability.errors import ErrorCode
+from observability import langfuse_sink
 from worker import job_manager
 
 _SSE_HEARTBEAT_SECONDS = 15.0
@@ -72,6 +73,7 @@ class ResearchResponse(BaseModel):
     groundedness_score: float | None = None
     sub_questions_count: int = 0
     unresolved_sub_questions_count: int = 0
+    trace_url: str | None = None
 
 
 def _pipeline_status_code(error_code: ErrorCode) -> int:
@@ -129,6 +131,7 @@ async def run_research(req: ResearchRequest):
         groundedness_score=result.get("groundedness_score"),
         sub_questions_count=result.get("sub_questions_count", 0),
         unresolved_sub_questions_count=result.get("unresolved_sub_questions_count", 0),
+        trace_url=langfuse_sink.get_trace_url(result.get("run_id", run_id)),
     )
 
 
@@ -199,6 +202,7 @@ async def resume_research(run_id: str):
         groundedness_score=result.get("groundedness_score"),
         sub_questions_count=result.get("sub_questions_count", 0),
         unresolved_sub_questions_count=result.get("unresolved_sub_questions_count", 0),
+        trace_url=langfuse_sink.get_trace_url(result.get("run_id", run_id)),
     )
 
 
@@ -272,6 +276,7 @@ async def stream_research(req: ResearchRequest, request: Request):
                 "groundedness_score": result.get("groundedness_score"),
                 "sub_questions_count": result.get("sub_questions_count", 0),
                 "unresolved_sub_questions_count": result.get("unresolved_sub_questions_count", 0),
+                "trace_url": langfuse_sink.get_trace_url(result.get("run_id", run_id)),
             }
             if req.evaluate:
                 eval_result = await loop.run_in_executor(None, score_report, result["report"], req.topic)

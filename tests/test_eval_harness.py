@@ -132,6 +132,54 @@ def test_research_case_parses_sse_stream_and_computes_metrics():
     assert result.metrics["cost_usd"] == 0.001
 
 
+def test_research_case_attaches_citation_precision_score_when_langfuse_configured(monkeypatch):
+    stream_body = (
+        _sse("stage_update", {"event_type": "run_started", "stage": ""})
+        + _sse("done", {"question_id": 1, "run_id": "run-42", "groundedness_score": 0.9})
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/research/stream":
+            return httpx.Response(200, content=stream_body, headers={"content-type": "text/event-stream"})
+        if request.url.path == "/questions/1/trace":
+            return httpx.Response(200, json={"conclusions": [{"findings": [{"source_url": "http://x"}]}]})
+        return httpx.Response(404)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://test")
+    entry = {"id": "easy-1", "category": "easy", "topic": "some real topic"}
+
+    scored = []
+    monkeypatch.setattr(harness.langfuse_sink, "attach_score", lambda run_id, name, value: scored.append((run_id, name, value)))
+
+    harness._run_research_case(client, entry)
+
+    assert scored == [("run-42", "citation_precision", 1.0)]
+
+
+def test_research_case_does_not_attach_score_without_a_run_id(monkeypatch):
+    stream_body = (
+        _sse("stage_update", {"event_type": "run_started", "stage": ""})
+        + _sse("done", {"question_id": 1, "groundedness_score": 0.9})
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/research/stream":
+            return httpx.Response(200, content=stream_body, headers={"content-type": "text/event-stream"})
+        if request.url.path == "/questions/1/trace":
+            return httpx.Response(200, json={"conclusions": [{"findings": [{"source_url": "http://x"}]}]})
+        return httpx.Response(404)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://test")
+    entry = {"id": "easy-1", "category": "easy", "topic": "some real topic"}
+
+    scored = []
+    monkeypatch.setattr(harness.langfuse_sink, "attach_score", lambda run_id, name, value: scored.append((run_id, name, value)))
+
+    harness._run_research_case(client, entry)
+
+    assert scored == []
+
+
 def test_aggregate_research_metrics_averages_across_runs():
     entries = [
         harness.EntryResult("e1", "easy", passed=None, metrics={"groundedness_score": 0.8, "citation_precision": 1.0}),
