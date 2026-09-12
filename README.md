@@ -297,6 +297,20 @@ Once you've run both against ~30 of your own saved reports, drop the resulting k
 
 ---
 
+## 🔭 Langfuse Tracing
+
+Opt-in, off by default. Set `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` (and optionally `LANGFUSE_HOST`, default `https://cloud.langfuse.com`; self-hosting works too) and every run gets one Langfuse trace, keyed on `run_id`:
+
+- One span per pipeline stage, nested under the run's trace.
+- One generation per `llm_attempt` — model, resolved deployment, tokens, cost, latency, attempt number, cache status.
+- Guardrail firings recorded as `guardrail`-typed observations; cache hits as plain events.
+- The pipeline's own real-time `groundedness_score` is attached to the trace as a score the moment the run finishes; the eval harness (above) separately attaches `citation_precision` for research-category golden-set runs, since that metric is only known after the fact from the harness's own trace lookup.
+- `POST /research`, `POST /research/{run_id}/resume`, and the `done` event of `POST /research/stream` all carry a `trace_url` field — the UI renders it as a **"view trace"** link on the report modal.
+
+`observability/langfuse_sink.py::trace_id_for(run_id)` derives the Langfuse trace ID deterministically from `run_id` via `Langfuse.create_trace_id(seed=...)` (a pure SHA-256 hash, no client or network call needed) — so the API process (building the trace URL) and the eval harness (a separate process, scoring a run against a *deployed* instance) always agree on the same trace, without sharing any in-memory state. Unset keys mean `EventBus` never even constructs a `LangfuseSink` (falls back to the existing no-op trace sink) and `trace_url` is always `None` — nothing else about the pipeline changes. Not live-verified against a real Langfuse project in this pass (no account/keys available) — covered by unit tests (`tests/test_langfuse_sink.py`) against a fake client that asserts the exact span nesting, generation fields, and score payloads the real SDK would receive.
+
+---
+
 ## ✅ Testing
 
 ```bash
@@ -313,6 +327,7 @@ Test count has grown alongside the production-upgrade phases (each phase's own c
 | 4 | Guardrails + groundedness critic stage | 90 |
 | 5 | Caching (search, sub-question semantic, LLM response) | 99 |
 | 6 | Golden-set eval harness, stats primitives, judge calibration, defect #8 fix | 141 |
+| 7 | Langfuse tracing (trace/span/generation mapping, trace URL, eval score attach) | 170 |
 
 ---
 
