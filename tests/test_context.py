@@ -25,6 +25,22 @@ def test_start_run_sets_context_and_emit_event_stamps_it():
     clear_run()
 
 
+def test_emit_event_stamps_a_timezone_aware_utc_timestamp():
+    """A naive datetime.utcnow() serializes with no offset suffix, which JS's
+    Date.parse() then silently misreads as *local* time (a real bug caught live
+    in Phase 8's frontend: stage durations were off by the browser's UTC offset).
+    """
+    EventBus.reset_for_tests()
+    start_run("run-tz")
+    set_stage("planner")
+    emit_event("stage_started")
+
+    ts = current_run().stage_events[0].timestamp
+    assert ts.tzinfo is not None
+    assert ts.utcoffset().total_seconds() == 0
+    clear_run()
+
+
 def test_set_stage_resets_stage_events_for_the_new_stage():
     start_run("run-2")
     set_stage("planner")

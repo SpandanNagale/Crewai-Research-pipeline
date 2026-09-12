@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from observability.bus import EventBus
@@ -64,7 +64,7 @@ def emit_event(event_type: str, **fields) -> None:
     event = RunEvent(
         run_id=ctx.run_id,
         seq=ctx.seq,
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
         stage=ctx.stage,
         event_type=event_type,
         **fields,
