@@ -1,0 +1,88 @@
+@import "tailwindcss";
+
+/*
+ * Control-room telemetry palette: dark, restrained, teal/amber/coral as the
+ * only saturated colors and each one semantic (never decorative). No purple
+ * gradients, no "AI-powered" chrome.
+ */
+:root {
+  --surface-0: #0a0d12;
+  --surface-1: #12161d;
+  --surface-2: #1a1f28;
+  --border-0: #262c37;
+  --border-1: #333b48;
+  --ink-0: #e7ebf1;
+  --ink-1: #aab2c0;
+  --ink-2: #6b7688;
+
+  --teal: #2dd4bf;
+  --teal-dim: #1a4d47;
+  --amber: #f2b94e;
+  --amber-dim: #4d3f1f;
+  --coral: #f2685c;
+  --coral-dim: #4d2621;
+}
+
+@theme inline {
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+
+  --color-surface-0: var(--surface-0);
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-border-0: var(--border-0);
+  --color-border-1: var(--border-1);
+  --color-ink-0: var(--ink-0);
+  --color-ink-1: var(--ink-1);
+  --color-ink-2: var(--ink-2);
+
+  --color-teal: var(--teal);
+  --color-teal-dim: var(--teal-dim);
+  --color-amber: var(--amber);
+  --color-amber-dim: var(--amber-dim);
+  --color-coral: var(--coral);
+  --color-coral-dim: var(--coral-dim);
+}
+
+body {
+  font-family: var(--font-sans), system-ui, sans-serif;
+}
+
+.font-telemetry {
+  font-family: var(--font-mono), ui-monospace, monospace;
+}
+
+::selection {
+  background: var(--teal-dim);
+  color: var(--ink-0);
+}
+
+.prose-report h1,
+.prose-report h2,
+.prose-report h3 {
+  color: var(--ink-0);
+  font-weight: 600;
+  margin-top: 1.25em;
+  margin-bottom: 0.4em;
+}
+.prose-report h1 { font-size: 1.05rem; }
+.prose-report h2 { font-size: 0.95rem; }
+.prose-report h3 { font-size: 0.875rem; }
+.prose-report p { margin-bottom: 0.75em; }
+.prose-report ul,
+.prose-report ol {
+  margin: 0.5em 0 0.75em 1.25em;
+}
+.prose-report li { margin-bottom: 0.25em; }
+.prose-report code {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  background: var(--surface-2);
+  padding: 0.1em 0.3em;
+  border-radius: 0.25em;
+  font-size: 0.85em;
+}
+.prose-report a {
+  color: var(--teal);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
