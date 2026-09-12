@@ -2,11 +2,12 @@ import asyncio
 import json
 import logging
 import queue
+import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -16,8 +17,10 @@ from crew.research_crew import GROUNDEDNESS_THRESHOLD, PipelineStageError, Resea
 from db import repository
 from db.session import init_db
 from eval.scorer import score_report
-from llm.router import check_provider_health
+from llm.byok import BYOKOverride, clear_byok, set_byok
+from llm.router import check_provider_health, find_model_for_provider
 from memory.reuse import KnowledgeReuseChecker
+from observability import budget
 from observability.bus import EventBus
 from observability.errors import ErrorCode
 from observability import langfuse_sink
@@ -59,6 +62,78 @@ class ResearchRequest(BaseModel):
     topic: str
     evaluate: bool = False
     force_rerun: bool = False
+    # Optional bring-your-own-key (see llm/byok.py): both or neither. Bypasses
+    # the daily budget kill-switch and routes the whole run through this
+    # provider/key instead of the deployment's own configured fallback chain.
+    byok_provider: str | None = None
+    byok_api_key: str | None = None
+
+
+class _RateLimiter:
+    """
+    In-memory sliding-window limiter per client IP, applied to the expensive
+    /research* endpoints. Deliberately not Redis-backed: this project targets
+    a single-instance deployment (see README's Deployment section) where an
+    in-process store is sufficient; a multi-instance deployment would need a
+    shared store instead, since each instance would otherwise track its own
+    independent window.
+    """
+
+    def __init__(self) -> None:
+        self._hits: dict[str, list[float]] = {}
+        self._lock = threading.Lock()
+
+    def check(self, request: Request) -> None:
+        limit = settings.RATE_LIMIT_PER_MINUTE
+        if limit <= 0:
+            return
+        client_ip = request.client.host if request.client else "unknown"
+        now = time.monotonic()
+        window_start = now - 60.0
+        with self._lock:
+            hits = [t for t in self._hits.get(client_ip, []) if t > window_start]
+            if len(hits) >= limit:
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"Rate limit exceeded: {limit} requests per minute per IP.",
+                )
+            hits.append(now)
+            self._hits[client_ip] = hits
+
+
+_rate_limiter = _RateLimiter()
+
+
+def _resolve_byok(req: ResearchRequest) -> BYOKOverride | None:
+    if not req.byok_provider and not req.byok_api_key:
+        return None
+    if not (req.byok_provider and req.byok_api_key):
+        raise HTTPException(
+            status_code=400, detail="byok_provider and byok_api_key must both be set, or neither."
+        )
+    model = find_model_for_provider(req.byok_provider)
+    if model is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown or unconfigured BYOK provider {req.byok_provider!r}.",
+        )
+    return BYOKOverride(provider=req.byok_provider, api_key=req.byok_api_key, model=model)
+
+
+def _enforce_budget(byok: BYOKOverride | None) -> None:
+    """A BYOK request spends the caller's own money, not the deployment's --
+    it bypasses the kill-switch entirely rather than being blocked by it."""
+    if byok is not None:
+        return
+    if budget.is_exceeded():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Daily budget (${settings.DAILY_BUDGET_USD:.2f}) exceeded. "
+                "Provide byok_provider/byok_api_key to continue on your own key, "
+                "or retry after midnight UTC."
+            ),
+        )
 
 
 class ResearchResponse(BaseModel):
@@ -91,12 +166,29 @@ def health_providers():
     return {"providers": check_provider_health()}
 
 
-def _run_pipeline(topic: str, force_rerun: bool, run_id: str | None = None) -> dict:
-    crew = ResearchCrew()
-    return crew.run_with_meta(topic, force_rerun=force_rerun, run_id=run_id)
+@app.get("/health/budget")
+def health_budget():
+    """Real spend so far today vs. the configured daily cap (0/None = uncapped)."""
+    return {
+        "daily_budget_usd": settings.DAILY_BUDGET_USD if settings.DAILY_BUDGET_USD > 0 else None,
+        "spent_today_usd": budget.spent_today_usd(),
+        "remaining_usd": budget.remaining_usd(),
+        "exceeded": budget.is_exceeded(),
+    }
 
 
-@app.post("/research", response_model=ResearchResponse)
+def _run_pipeline(
+    topic: str, force_rerun: bool, run_id: str | None = None, byok_override: BYOKOverride | None = None
+) -> dict:
+    set_byok(byok_override)
+    try:
+        crew = ResearchCrew()
+        return crew.run_with_meta(topic, force_rerun=force_rerun, run_id=run_id)
+    finally:
+        clear_byok()
+
+
+@app.post("/research", response_model=ResearchResponse, dependencies=[Depends(_rate_limiter.check)])
 async def run_research(req: ResearchRequest):
     """
     Run the full multi-agent research pipeline for a given topic, persisting
@@ -106,11 +198,13 @@ async def run_research(req: ResearchRequest):
     """
     if not req.topic.strip():
         raise HTTPException(status_code=400, detail="Topic cannot be empty.")
+    byok = _resolve_byok(req)
+    _enforce_budget(byok)
 
     run_id = str(uuid.uuid4())
     loop = asyncio.get_event_loop()
     try:
-        result = await loop.run_in_executor(None, _run_pipeline, req.topic, req.force_rerun, run_id)
+        result = await loop.run_in_executor(None, _run_pipeline, req.topic, req.force_rerun, run_id, byok)
     except PipelineStageError as e:
         raise HTTPException(
             status_code=_pipeline_status_code(e.error_code),
@@ -135,7 +229,7 @@ async def run_research(req: ResearchRequest):
     )
 
 
-@app.post("/research/async")
+@app.post("/research/async", dependencies=[Depends(_rate_limiter.check)])
 async def run_research_async(req: ResearchRequest):
     """
     Fire-and-forget variant of /research: returns a job_id immediately and
@@ -146,9 +240,11 @@ async def run_research_async(req: ResearchRequest):
     """
     if not req.topic.strip():
         raise HTTPException(status_code=400, detail="Topic cannot be empty.")
+    byok = _resolve_byok(req)
+    _enforce_budget(byok)
 
     run_id = str(uuid.uuid4())
-    job_manager.submit(_run_pipeline, req.topic, req.force_rerun, run_id, job_id=run_id)
+    job_manager.submit(_run_pipeline, req.topic, req.force_rerun, run_id, byok, job_id=run_id)
     return {"job_id": run_id, "status": "pending"}
 
 
@@ -177,6 +273,7 @@ async def resume_research(run_id: str):
         raise HTTPException(status_code=404, detail="Unknown run_id.")
     if run["status"] == "succeeded":
         raise HTTPException(status_code=409, detail="Run already succeeded; nothing to resume.")
+    _enforce_budget(None)  # resume has no request body to carry a BYOK override
 
     crew = ResearchCrew()
     loop = asyncio.get_event_loop()
@@ -206,7 +303,7 @@ async def resume_research(run_id: str):
     )
 
 
-@app.post("/research/stream")
+@app.post("/research/stream", dependencies=[Depends(_rate_limiter.check)])
 async def stream_research(req: ResearchRequest, request: Request):
     """
     Streams RunEvents live as the pipeline executes, via the same EventBus
@@ -216,12 +313,14 @@ async def stream_research(req: ResearchRequest, request: Request):
     """
     if not req.topic.strip():
         raise HTTPException(status_code=400, detail="Topic cannot be empty.")
+    byok = _resolve_byok(req)
+    _enforce_budget(byok)
 
     run_id = str(uuid.uuid4())
 
     async def event_generator():
         loop = asyncio.get_event_loop()
-        future = loop.run_in_executor(None, _run_pipeline, req.topic, req.force_rerun, run_id)
+        future = loop.run_in_executor(None, _run_pipeline, req.topic, req.force_rerun, run_id, byok)
         event_queue = EventBus.instance().queue_sink.get_queue(run_id)
 
         yield _sse("stage_update", {"event_type": "run_started", "run_id": run_id, "stage": ""})
