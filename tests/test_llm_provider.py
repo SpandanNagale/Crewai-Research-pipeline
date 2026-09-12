@@ -1,8 +1,50 @@
 import openai
 import pytest
 
+from llm.byok import BYOKOverride, clear_byok, set_byok
 from llm.provider import LLMConfigError, get_llm
 from llm.router_llm import RouterLLM
+
+
+@pytest.fixture(autouse=True)
+def _clear_byok_between_tests():
+    clear_byok()
+    yield
+    clear_byok()
+
+
+def test_get_llm_uses_byok_override_instead_of_configured_model_groups(monkeypatch):
+    monkeypatch.setattr("llm.provider.settings.GROQ_API_KEY", "")  # deployment's own key unset
+    set_byok(BYOKOverride(provider="groq", api_key="user-supplied-key", model="llama-3.3-70b-versatile"))
+
+    llm = get_llm("researcher")
+
+    assert isinstance(llm, RouterLLM)
+    assert len(llm.deployments) == 1
+    assert llm.aliases == ["groq"]
+    assert llm.deployments[0].api_key == "user-supplied-key"
+    assert llm.deployments[0].model == "llama-3.3-70b-versatile"
+
+
+def test_get_llm_byok_override_raises_for_unknown_provider():
+    set_byok(BYOKOverride(provider="not-a-real-provider", api_key="k", model="m"))
+    with pytest.raises(LLMConfigError, match="Unknown BYOK provider"):
+        get_llm("researcher")
+
+
+def test_get_llm_ignores_byok_override_once_cleared(monkeypatch):
+    monkeypatch.setattr("llm.provider.settings.GROQ_API_KEY", "groq-test")
+    monkeypatch.setattr("llm.provider.settings.OLLAMA_API_KEY", "ollama-test")
+    monkeypatch.setattr("llm.provider.settings.OPENROUTER_API_KEY", "or-test")
+    monkeypatch.setattr("llm.provider.settings.GEMINI_API_KEY", "gemini-test")
+    import llm.router as router_module
+    router_module._deployment_cache.clear()
+
+    set_byok(BYOKOverride(provider="groq", api_key="k", model="m"))
+    clear_byok()
+
+    llm = get_llm("researcher")
+    assert len(llm.deployments) == 4  # back to the normal model_groups path
 
 
 def test_get_llm_returns_router_llm_for_known_alias(monkeypatch):

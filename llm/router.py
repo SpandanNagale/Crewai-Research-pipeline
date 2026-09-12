@@ -6,7 +6,7 @@ model_groups section. Also exposes the preflight health check.
 from __future__ import annotations
 
 import threading
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import yaml
 from crewai import LLM
@@ -92,6 +92,21 @@ def get_deployment_aliases(agent_name: str) -> List[str]:
         aliases = [entry["provider"] for entry in group]
         _alias_cache[agent_name] = aliases
         return aliases
+
+
+def find_model_for_provider(provider_key: str) -> Optional[str]:
+    """
+    A reasonable default model for a BYOK request (llm/byok.py): reuses
+    whatever model this deployment already trusts that provider with for some
+    agent, rather than hardcoding a second, easily-stale model list. None if
+    no agent's model_groups lists this provider at all.
+    """
+    config = _load_config()
+    for group in config.get("model_groups", {}).values():
+        for entry in group:
+            if entry["provider"] == provider_key:
+                return entry["model"]
+    return None
 
 
 def check_provider_health() -> List[dict]:

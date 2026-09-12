@@ -38,14 +38,17 @@ class LLMProvider(ABC):
     """One pluggable LLM backend."""
 
     @abstractmethod
-    def build(self, model: str, temperature: float) -> LLM:
+    def build(self, model: str, temperature: float, api_key: Optional[str] = None) -> LLM:
+        """api_key overrides the provider's configured settings.X_API_KEY -- used
+        for a bring-your-own-key request (see llm/byok.py). None means "use the
+        deployment's own configured key", the existing behavior."""
         ...
 
 
 class OllamaLocalProvider(LLMProvider):
     """Local Ollama server. Zero-cost, no API key required. Default provider."""
 
-    def build(self, model: str, temperature: float) -> LLM:
+    def build(self, model: str, temperature: float, api_key: Optional[str] = None) -> LLM:
         return LLM(
             model=model,
             provider="ollama",
@@ -65,8 +68,9 @@ class OllamaLocalProvider(LLMProvider):
 class OllamaCloudProvider(LLMProvider):
     """Ollama Cloud. Same API surface as local Ollama, just base_url + api_key."""
 
-    def build(self, model: str, temperature: float) -> LLM:
-        if not settings.OLLAMA_API_KEY:
+    def build(self, model: str, temperature: float, api_key: Optional[str] = None) -> LLM:
+        key = api_key or settings.OLLAMA_API_KEY
+        if not key:
             raise LLMConfigError(
                 "LLM_PROVIDER=ollama_cloud requires OLLAMA_API_KEY to be set in .env "
                 "(get one at https://ollama.com after `ollama signin`)."
@@ -75,7 +79,7 @@ class OllamaCloudProvider(LLMProvider):
             model=model,
             provider="ollama",
             base_url=settings.OLLAMA_CLOUD_BASE_URL,
-            api_key=settings.OLLAMA_API_KEY,
+            api_key=key,
             temperature=temperature,
             additional_params={"extra_body": {"options": {"num_ctx": settings.OLLAMA_NUM_CTX}}},
         )
@@ -84,8 +88,9 @@ class OllamaCloudProvider(LLMProvider):
 class GroqProvider(LLMProvider):
     """Groq's OpenAI-compatible API. Fast inference, free tier available."""
 
-    def build(self, model: str, temperature: float) -> LLM:
-        if not settings.GROQ_API_KEY:
+    def build(self, model: str, temperature: float, api_key: Optional[str] = None) -> LLM:
+        key = api_key or settings.GROQ_API_KEY
+        if not key:
             raise LLMConfigError(
                 "LLM_PROVIDER=groq requires GROQ_API_KEY to be set in .env "
                 "(get one at https://console.groq.com/keys)."
@@ -94,7 +99,7 @@ class GroqProvider(LLMProvider):
             model=model,
             provider="openai",
             base_url=settings.GROQ_BASE_URL,
-            api_key=settings.GROQ_API_KEY,
+            api_key=key,
             temperature=temperature,
         )
 
@@ -102,8 +107,9 @@ class GroqProvider(LLMProvider):
 class OpenRouterProvider(LLMProvider):
     """OpenRouter — aggregates many hosted models behind one OpenAI-compatible API."""
 
-    def build(self, model: str, temperature: float) -> LLM:
-        if not settings.OPENROUTER_API_KEY:
+    def build(self, model: str, temperature: float, api_key: Optional[str] = None) -> LLM:
+        key = api_key or settings.OPENROUTER_API_KEY
+        if not key:
             raise LLMConfigError(
                 "OPENROUTER_API_KEY is required to use the openrouter provider "
                 "(get one at https://openrouter.ai/keys)."
@@ -112,7 +118,7 @@ class OpenRouterProvider(LLMProvider):
             model=model,
             provider="openrouter",
             base_url=settings.OPENROUTER_BASE_URL,
-            api_key=settings.OPENROUTER_API_KEY,
+            api_key=key,
             temperature=temperature,
         )
 
@@ -120,8 +126,9 @@ class OpenRouterProvider(LLMProvider):
 class GeminiProvider(LLMProvider):
     """Google Gemini. crewai has a native client for this provider — no base_url needed."""
 
-    def build(self, model: str, temperature: float) -> LLM:
-        if not settings.GEMINI_API_KEY:
+    def build(self, model: str, temperature: float, api_key: Optional[str] = None) -> LLM:
+        key = api_key or settings.GEMINI_API_KEY
+        if not key:
             raise LLMConfigError(
                 "GEMINI_API_KEY is required to use the gemini provider "
                 "(get one at https://aistudio.google.com/apikey)."
@@ -129,7 +136,7 @@ class GeminiProvider(LLMProvider):
         return LLM(
             model=model,
             provider="gemini",
-            api_key=settings.GEMINI_API_KEY,
+            api_key=key,
             temperature=temperature,
         )
 
@@ -153,8 +160,19 @@ def get_llm(agent_name: Optional[str] = None) -> LLM:
     if not agent_name:
         raise LLMConfigError("get_llm() requires a non-empty agent_name.")
 
+    from llm.byok import get_byok
     from llm.router import get_deployment_aliases, get_deployments
     from llm.router_llm import RouterLLM
+
+    override = get_byok()
+    if override is not None:
+        provider = _PROVIDERS.get(override.provider)
+        if provider is None:
+            raise LLMConfigError(
+                f"Unknown BYOK provider {override.provider!r}. Supported: {', '.join(_PROVIDERS)}"
+            )
+        deployment = provider.build(override.model, settings.OLLAMA_TEMPERATURE, api_key=override.api_key)
+        return RouterLLM(model=agent_name, deployments=[deployment], aliases=[override.provider])
 
     deployments = get_deployments(agent_name)
     aliases = get_deployment_aliases(agent_name)

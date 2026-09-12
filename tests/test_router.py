@@ -100,3 +100,23 @@ def test_get_deployment_aliases_returns_config_aliases_parallel_to_deployments(m
     # one chain -- aliases is the only place that distinction survives.
     assert aliases[0] == "openrouter"
     assert aliases[1] == "groq"
+
+
+def test_find_model_for_provider_returns_a_real_configured_model():
+    import llm.router as router_module
+
+    model = router_module.find_model_for_provider("groq")
+    assert model is not None
+    # Whatever it is, it must actually appear in some agent's model_groups
+    # entry for "groq" -- not a hardcoded/second model list going stale.
+    config = router_module._load_config()
+    all_groq_models = {
+        e["model"] for group in config["model_groups"].values() for e in group if e["provider"] == "groq"
+    }
+    assert model in all_groq_models
+
+
+def test_find_model_for_provider_returns_none_for_unconfigured_provider():
+    import llm.router as router_module
+
+    assert router_module.find_model_for_provider("not-a-real-provider") is None
