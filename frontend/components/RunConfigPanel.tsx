@@ -1,13 +1,18 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { fetchProviderHealth } from "@/lib/api";
+import { BudgetHealth, ByokCredentials, fetchBudgetHealth, fetchProviderHealth } from "@/lib/api";
 import { FAILURE_DEMO_TOPIC } from "@/lib/constants";
 import { ProviderHealthEntry } from "@/lib/types";
 
+const BYOK_PROVIDERS = ["groq", "ollama_cloud", "openrouter", "gemini"];
+
 interface Props {
   running: boolean;
-  onStart: (topic: string, opts: { forceRerun: boolean; evaluate: boolean }) => void;
+  onStart: (
+    topic: string,
+    opts: { forceRerun: boolean; evaluate: boolean; byok?: ByokCredentials }
+  ) => void;
   onCancel: () => void;
 }
 
@@ -17,17 +22,26 @@ export function RunConfigPanel({ running, onStart, onCancel }: Props) {
   const [evaluate, setEvaluate] = useState(false);
   const [providers, setProviders] = useState<ProviderHealthEntry[] | null>(null);
   const [providersError, setProvidersError] = useState<string | null>(null);
+  const [budgetHealth, setBudgetHealth] = useState<BudgetHealth | null>(null);
+  const [byokProvider, setByokProvider] = useState(BYOK_PROVIDERS[0]);
+  const [byokApiKey, setByokApiKey] = useState("");
 
   useEffect(() => {
     fetchProviderHealth()
       .then(setProviders)
       .catch((e) => setProvidersError(e instanceof Error ? e.message : String(e)));
+    fetchBudgetHealth().then(setBudgetHealth).catch(() => setBudgetHealth(null));
   }, []);
+
+  const byok: ByokCredentials | undefined =
+    budgetHealth?.exceeded && byokApiKey.trim()
+      ? { provider: byokProvider, apiKey: byokApiKey.trim() }
+      : undefined;
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!topic.trim() || running) return;
-    onStart(topic.trim(), { forceRerun, evaluate });
+    onStart(topic.trim(), { forceRerun, evaluate, byok });
   }
 
   return (
@@ -93,6 +107,48 @@ export function RunConfigPanel({ running, onStart, onCancel }: Props) {
           </button>
         )}
       </form>
+
+      {budgetHealth?.daily_budget_usd != null && (
+        <div
+          className={`rounded-md border px-3 py-2 text-xs font-telemetry ${
+            budgetHealth.exceeded ? "border-coral text-coral" : "border-border-0 text-ink-1"
+          }`}
+        >
+          Daily budget: ${budgetHealth.spent_today_usd.toFixed(2)} / $
+          {budgetHealth.daily_budget_usd.toFixed(2)} spent
+          {budgetHealth.exceeded && " — exhausted"}
+        </div>
+      )}
+
+      <details className="text-sm" open={budgetHealth?.exceeded}>
+        <summary className="cursor-pointer text-ink-1">Bring your own key</summary>
+        <div className="flex flex-col gap-2 mt-2">
+          <p className="text-xs text-ink-2">
+            {budgetHealth?.exceeded
+              ? "The deployment's daily budget is exhausted — supply your own key to keep going."
+              : "Optional: route this run through your own key instead of the deployment's."}
+          </p>
+          <select
+            value={byokProvider}
+            onChange={(e) => setByokProvider(e.target.value)}
+            className="rounded-md border border-border-0 bg-surface-0 px-2 py-1.5 text-sm text-ink-0"
+          >
+            {BYOK_PROVIDERS.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </select>
+          <input
+            type="password"
+            value={byokApiKey}
+            onChange={(e) => setByokApiKey(e.target.value)}
+            placeholder="API key"
+            autoComplete="off"
+            className="rounded-md border border-border-0 bg-surface-0 px-2 py-1.5 text-sm text-ink-0 placeholder:text-ink-2"
+          />
+        </div>
+      </details>
 
       <button
         type="button"

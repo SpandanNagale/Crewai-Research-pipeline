@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useReducer, useRef } from "react";
-import { startResearchStream } from "./api";
+import { ByokCredentials, startResearchStream } from "./api";
 import { initialRunState, runReducer } from "./pipeline";
 import { parseSseStream } from "./sse";
 import { DonePayload, ErrorPayload, RunEvent } from "./types";
@@ -11,7 +11,10 @@ export function useResearchRun() {
   const abortRef = useRef<AbortController | null>(null);
 
   const start = useCallback(
-    async (topic: string, opts: { forceRerun?: boolean; evaluate?: boolean } = {}) => {
+    async (
+      topic: string,
+      opts: { forceRerun?: boolean; evaluate?: boolean; byok?: ByokCredentials } = {}
+    ) => {
       abortRef.current?.abort();
       const controller = new AbortController();
       abortRef.current = controller;
