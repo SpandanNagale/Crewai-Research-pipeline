@@ -210,23 +210,30 @@ Before running full research, the topic is embedded and compared (cosine similar
 
 ## 🔌 LLM Providers
 
-Every agent gets its LLM from a single factory (`llm/provider.py`), selected via `LLM_PROVIDER` in `.env`. **Local Ollama is the default and requires no API key.** Cloud providers are strictly opt-in.
+Every agent gets its LLM from `llm/provider.py::get_llm(agent_name)`, which builds a `RouterLLM` (`llm/router_llm.py`) wrapping that agent's **ordered fallback chain** of deployments — not a single global provider. The chain for each of the seven agent aliases (`planner`, `researcher`, `evidence_comparator`, `classifier`, `writer`, `critic`, `evaluator`) lives in `config/agents_config.yaml`'s `model_groups` section:
 
-| `LLM_PROVIDER` | Cost | Where to get a key | Notes |
-| :--- | :--- | :--- | :--- |
-| `ollama_local` (default) | Free | — | Runs entirely on your machine via `OLLAMA_BASE_URL` (default `localhost:11434`). No rate limits beyond your hardware. |
-| `ollama_cloud` | Free/paid tiers | `ollama signin` at [ollama.com](https://ollama.com) | Same Ollama API, hosted — set `OLLAMA_API_KEY`. Useful when local hardware can't run the model. |
-| `groq` | Free tier, then paid | [console.groq.com/keys](https://console.groq.com/keys) | Fast hosted inference (e.g. `llama-3.3-70b-versatile`). Free tier has request-per-minute limits — see Groq's console for current limits. |
-
-Per-agent overrides live in `config/agents_config.yaml` (e.g. a fast Groq model for the Planner/Classifier, a larger model for the Writer):
 ```yaml
-planner:
-  llm_provider: groq
-  llm_model: llama-3.1-8b-instant
+model_groups:
+  planner:
+    - {provider: ollama_cloud, model: gpt-oss:120b-cloud}
+    - {provider: groq, model: openai/gpt-oss-20b}
+    - {provider: openrouter, model: nvidia/nemotron-3-super-120b-a12b:free}
+    - {provider: gemini, model: gemini-3.6-flash}
 ```
-Any agent without an override falls back to the global `LLM_PROVIDER` / `LLM_MODEL` in `.env`.
 
-**If a provider becomes unavailable** (auth error, timeout, rate limit), the pipeline does **not** silently return an empty report: the failing stage raises a `PipelineStageError` naming the stage and the underlying error, the API returns `502` with that detail, and the CLI surfaces the same message. There is no automatic cross-provider fallback for the LLM (unlike search, below) — switch `LLM_PROVIDER` in `.env` or fix the credentials and re-run.
+A call tries each deployment in order, advancing on a transient failure (timeout, rate limit, auth error) and returning the first success — see `llm/router_llm.py::RouterLLM.call()`. `GET /health/providers` pings every configured deployment for every agent, live.
+
+| Provider | Cost | Where to get a key |
+| :--- | :--- | :--- |
+| `ollama_local` | Free | — (`OLLAMA_BASE_URL`, default `localhost:11434`) |
+| `ollama_cloud` | Free/paid tiers | `ollama signin` at [ollama.com](https://ollama.com), set `OLLAMA_API_KEY` |
+| `groq` | Free tier, then paid | [console.groq.com/keys](https://console.groq.com/keys) |
+| `openrouter` | Varies by model (some free) | [openrouter.ai/keys](https://openrouter.ai/keys) |
+| `gemini` | Free tier, then paid | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
+
+**`ollama_local` is deliberately absent from every `model_groups` chain above** — it needs a local Ollama server, which can't exist on a deployed instance (Render, HF Spaces, …). It stays available as a `_PROVIDERS` entry for local development (point `llm/provider.py`'s `OllamaLocalProvider` at it directly, or add it to a chain, if you're running everything on your own machine), but the deployed config must never depend on it — see the [Deployment](#-deployment) section.
+
+**If every deployment in a chain fails**, the pipeline does **not** silently return an empty report: the failing stage raises a `PipelineStageError` naming the stage and the underlying error, the API returns `502` with that detail (or `400` for a guardrail block), and the CLI surfaces the same message.
 
 ---
 
@@ -246,10 +253,40 @@ If the configured provider's request fails at runtime (network error, rate limit
 
 The current setup (`worker/job_manager.py` + SQLite) is deliberately minimal so the project stays free and locally runnable. To scale:
 
-1. **Queue-based workers.** `POST /research/async` already returns a `job_id` and runs the pipeline off the request thread via a `ThreadPoolExecutor`. Swap `job_manager.submit()` for a Celery `task.delay()` call backed by Redis or RabbitMQ, and run `celery -A worker worker` processes that can scale horizontally. Job status would move from the in-memory dict to a Redis hash or a `jobs` DB table so it survives restarts and is visible across processes.
+1. **Queue-based workers.** `POST /research/async` already returns a `job_id`, runs the pipeline off the request thread via a `ThreadPoolExecutor`, and persists status to a `jobs` DB table (`db/repository.py`'s `create_job`/`set_job_status`/`get_job`) rather than an in-memory dict, so a restart no longer loses it. What's still in-process is execution itself — swap `job_manager.submit()`'s body for a Celery `task.delay()` call backed by Redis or RabbitMQ, and run `celery -A worker worker` processes that scale horizontally, writing to the same `jobs` table.
 2. **Postgres migration.** `DATABASE_URL` is the only thing that needs to change (`db/session.py` reads it directly) — point it at `postgresql+psycopg2://...` for concurrent writers, connection pooling, and indexing at volume. The SQLAlchemy models are dialect-agnostic.
 3. **Caching via knowledge reuse.** The ChromaDB similarity check in `memory/reuse.py` already acts as a cache — as the corpus of past questions grows, an increasing fraction of new questions can be answered from `research_questions`/`findings`/`conclusions` without invoking any LLM or search call at all. At high volume this is the single biggest cost lever.
 4. **Read scaling.** The `/questions/{id}/trace`, `/contradictions`, and `/knowledge/search` endpoints are pure reads — put them behind a cache (Redis) or read replica once `research_questions` grows past what a single Postgres instance comfortably serves.
+
+---
+
+## 🚢 Deployment
+
+Target topology: **frontend on Vercel** (native Next.js build, no Dockerfile needed), **backend (`app.py`) on Render or HF Spaces**. `docker-compose.yml` is for reproducible local runs, not this topology — see below.
+
+**Default provider.** No agent's `model_groups` chain lists `ollama_local` (see [LLM Providers](#-llm-providers)) — a deployed instance never depends on a local Ollama server that can't exist there. This needs no per-deployment configuration; it's already true of the checked-in `config/agents_config.yaml`. Keep it that way if you add a chain entry for local development.
+
+**Persistence.** SQLite (`research.db`) and ChromaDB (`chroma_db/`) both write to local disk, which is ephemeral on most free tiers — a redeploy or restart silently resets both unless you act. The explicit choice for this project: **attach a persistent volume** at deploy time (Render's "Disks", a Fly.io volume, or the `docker-compose.yml` volumes below) covering both paths, rather than migrating to managed Postgres + a hosted vector store. Reasoning: `DATABASE_URL` already supports Postgres with zero code changes (`db/session.py` reads it directly, the SQLAlchemy models are dialect-agnostic — see [Scaling](#-scaling-from-10-to-100000-questions)), so that migration is cheap to defer; `chroma_db/`'s path is currently hardcoded in `memory/vector_store.py`, so swapping it for a hosted vector store (Pinecone, Weaviate, Chroma Cloud) is a real code change, not just a config one — worth doing when volume actually justifies it, not preemptively. **Do not** deploy without a mounted volume and call it done; that silently resets both stores on every redeploy.
+
+**Job durability.** Fixed — `POST /research/async`'s status now lives in a `jobs` DB table, not an in-memory dict (defect #14; see [Scaling](#-scaling-from-10-to-100000-questions)'s point 1). It persists across a restart as long as `research.db` itself is on a mounted volume.
+
+**Rate limiting and budget.**
+
+- `RATE_LIMIT_PER_MINUTE` (`.env`, default `0` = disabled) caps requests per client IP on `/research`, `/research/async`, and `/research/stream` — an in-memory, per-process sliding window (`app.py::_RateLimiter`). Fine for the single-instance deployment this project targets; a multi-instance deployment needs a shared store (Redis) instead, since each instance would otherwise track its own independent window.
+- `DAILY_BUDGET_USD` (default `0` = uncapped) is a hard kill-switch on real LLM spend across the whole deployment: `observability/budget.py`'s `BudgetSink` records every `llm_attempt`'s real cost to a `budget_entries` table (always, regardless of whether a cap is set), and the three run-starting endpoints return `503` once the day's total meets the cap. `GET /health/budget` exposes the real numbers — this is a visible wall, not a silent one.
+- **Bring-your-own-key** (`byok_provider` + `byok_api_key` on the request body) bypasses the budget check entirely and routes that one run through the caller's own key (`llm/byok.py`), rather than locking them out once the deployment's budget is spent. The frontend's left pane surfaces this automatically once `GET /health/budget` reports `exceeded: true`.
+
+**Secrets.** `.gitignore` covers `.env` and `*.db` (which includes `research.db`) at the repo root — verified, not assumed. Set real values through the platform's own env store (Render/Vercel/Fly secrets), never commit `.env`.
+
+**Docker.** `Dockerfile` (backend) and `frontend/Dockerfile` (Next.js, 3-stage build using `output: "standalone"`) plus `docker-compose.yml` bring up both services together for a reproducible local run:
+
+```bash
+docker compose up --build
+```
+
+This mounts named volumes for `research.db` and `chroma_db/` so data survives `docker compose down` and back up — verified live by recording a budget entry inside the running backend container, restarting it, and confirming `GET /health/budget` still reported it. `docker-compose.yml` is not the production topology (see above); it exists for local development and demos where a bare `uvicorn --reload` / `npm run dev` pair isn't reproducible enough.
+
+**Cold starts.** Free-tier instances (Render, Fly's stopped machines) spin down when idle and take up to ~50s to wake on the next request — a blank-looking UI during that window is fatal in a live demo. The frontend's `Dashboard` component gates the whole UI behind a bounded `/health` poll on mount (`lib/api.ts::waitForBackend`, up to 60s) and shows an explicit "waking up the backend…" state instead of rendering broken panels while the backend is still starting.
 
 ---
 
@@ -340,6 +377,7 @@ Test count has grown alongside the production-upgrade phases (each phase's own c
 | 6 | Golden-set eval harness, stats primitives, judge calibration, defect #8 fix | 141 |
 | 7 | Langfuse tracing (trace/span/generation mapping, trace URL, eval score attach) | 170 |
 | 8 | Next.js frontend, API-only backend, UTC-timestamp fix | 172 |
+| 9 | Deployment hardening (durable jobs, budget kill-switch, rate limiting, BYOK, Docker) | 197 |
 
 ---
 
