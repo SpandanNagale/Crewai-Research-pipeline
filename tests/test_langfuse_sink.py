@@ -1,11 +1,39 @@
 from datetime import datetime
 
 import pytest
+from opentelemetry import trace as otel_trace_api
 
 from config.settings import settings
 from observability import langfuse_sink
 from observability.events import RunEvent
 from observability.node_state import NodeState
+
+
+_next_fake_span_id = [1]
+
+
+def _make_fake_otel_span():
+    """otel_trace_api.get_current_span() only ever returns real Span instances
+    (see its source: `isinstance(span, Span)` or it falls back to INVALID_SPAN) --
+    so the fake parent otel span used to test langfuse_sink._start_nested's real
+    OTel-context nesting must actually be one, not a bare duck-typed object.
+    NonRecordingSpan is the SDK's own minimal concrete Span."""
+    span_id = _next_fake_span_id[0]
+    _next_fake_span_id[0] += 1
+    span = otel_trace_api.NonRecordingSpan(otel_trace_api.SpanContext(
+        trace_id=1, span_id=span_id, is_remote=False,
+        trace_flags=otel_trace_api.TraceFlags(0x01),
+    ))
+    span._id = span_id  # convenience for test assertions below
+    return span
+
+
+def _current_otel_span_id():
+    """The id() of whatever FakeOtelSpan is ambient via otel_trace_api.use_span(),
+    or None if there is no real ambient span (e.g. the root, created via the
+    explicit trace_context={"parent_span_id": None} path)."""
+    ctx = otel_trace_api.get_current_span().get_span_context()
+    return ctx.span_id if ctx.is_valid else None
 
 
 class FakeObservation:
@@ -15,6 +43,11 @@ class FakeObservation:
         self.kwargs = kwargs
         self.id = f"span-{id(self):x}"[:16]
         self.trace_id = kwargs.get("trace_context", {}).get("trace_id")
+        # Nested children are created under otel_trace_api.use_span(parent._otel_span, ...)
+        # (real OTel context propagation, not trace_context) -- capture that here so
+        # tests can assert "child of X" without the sink passing trace_context at all.
+        self.parent_from_context = _current_otel_span_id()
+        self._otel_span = _make_fake_otel_span()
         self.ended = False
         self.end_calls = []
         self.update_calls = []
@@ -42,7 +75,7 @@ class FakeLangfuseClient:
         return obs
 
     def create_event(self, *, name, **kwargs):
-        self.events.append({"name": name, **kwargs})
+        self.events.append({"name": name, "parent_from_context": _current_otel_span_id(), **kwargs})
 
     def create_score(self, *, trace_id, name, value, **kwargs):
         self.scores.append({"trace_id": trace_id, "name": name, "value": value, **kwargs})
@@ -154,7 +187,7 @@ class TestLangfuseSinkLifecycle:
         sink.emit(_event(event_type="stage_started", stage="planner"))
         stage_span = fake_client.observations[1]
         assert stage_span.name == "planner"
-        assert stage_span.kwargs["trace_context"]["parent_span_id"] == root.id
+        assert stage_span.parent_from_context == root._otel_span._id
 
     def test_llm_attempt_creates_generation_under_current_stage(self, fake_client):
         sink = langfuse_sink.LangfuseSink()
@@ -170,7 +203,7 @@ class TestLangfuseSinkLifecycle:
 
         gen = fake_client.observations[-1]
         assert gen.as_type == "generation"
-        assert gen.kwargs["trace_context"]["parent_span_id"] == stage_span.id
+        assert gen.parent_from_context == stage_span._otel_span._id
         assert gen.kwargs["model"] == "groq:llama"
         assert gen.kwargs["usage_details"] == {"input": 100, "output": 50}
         assert gen.kwargs["cost_details"] == {"total": 0.002}
@@ -197,7 +230,7 @@ class TestLangfuseSinkLifecycle:
 
         assert len(fake_client.events) == 1
         assert fake_client.events[0]["name"] == "cache_hit"
-        assert fake_client.events[0]["trace_context"]["parent_span_id"] == stage_span.id
+        assert fake_client.events[0]["parent_from_context"] == stage_span._otel_span._id
 
     def test_guardrail_fired_uses_guardrail_observation_type(self, fake_client):
         sink = langfuse_sink.LangfuseSink()

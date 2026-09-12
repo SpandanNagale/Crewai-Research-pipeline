@@ -243,6 +243,9 @@ def test_research_response_trace_url_is_none_when_langfuse_unconfigured(monkeypa
         return {"report": "ok", "question_id": 1, "run_id": run_id, "reused": False}
 
     monkeypatch.setattr("app._run_pipeline", fake_pipeline)
+    # Force the unconfigured case regardless of the environment's real .env (this
+    # repo's local .env may have real Langfuse keys for live verification).
+    monkeypatch.setattr("app.langfuse_sink.get_trace_url", lambda run_id: None)
 
     with TestClient(app_module.app) as client:
         response = client.post("/research", json={"topic": "t"})

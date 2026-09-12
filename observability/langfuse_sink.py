@@ -26,6 +26,8 @@ import logging
 import threading
 from typing import Any, Dict, Optional
 
+from opentelemetry import trace as otel_trace_api
+
 from config.settings import settings
 from observability.events import RunEvent
 
@@ -94,6 +96,20 @@ _STAGE_OBSERVATION_TYPES = {
 }
 
 
+def _start_nested(parent, *, name: str, as_type: str = "span", **kwargs):
+    """Create a child observation of `parent` via real OTel context propagation
+    (not the trace_context={"trace_id":...} remote-parent path -- that path marks
+    *every* observation it touches AS_ROOT, which made the trace's own name/input
+    flicker to whatever child happened to be processed last server-side)."""
+    with otel_trace_api.use_span(parent._otel_span, end_on_exit=False):
+        return _get_client().start_observation(name=name, as_type=as_type, **kwargs)
+
+
+def _event_nested(parent, *, name: str, **kwargs) -> None:
+    with otel_trace_api.use_span(parent._otel_span, end_on_exit=False):
+        _get_client().create_event(name=name, **kwargs)
+
+
 class LangfuseSink:
     """EventBus Sink: one trace per run_id, one span per stage, nested child
     observations for llm_attempt/cache_hit/guardrail_fired. See module docstring."""
@@ -156,10 +172,7 @@ class LangfuseSink:
             self._runs[event.run_id] = {"trace_id": trace_id, "root": root, "stages": {}}
 
     def _on_stage_started(self, event: RunEvent, state: Dict[str, Any]) -> None:
-        span = _get_client().start_observation(
-            trace_context={"trace_id": state["trace_id"], "parent_span_id": state["root"].id},
-            name=event.stage, as_type="span",
-        )
+        span = _start_nested(state["root"], name=event.stage, as_type="span")
         state["stages"][event.stage] = span
 
     def _on_stage_finished(self, event: RunEvent, state: Dict[str, Any]) -> None:
@@ -182,9 +195,8 @@ class LangfuseSink:
             usage["output"] = event.completion_tokens
         cost = {"total": event.cost_usd} if event.cost_usd is not None else None
         level = "DEFAULT" if event.message in ("ok", "cache_hit") else "WARNING"
-        gen = _get_client().start_observation(
-            trace_context={"trace_id": state["trace_id"], "parent_span_id": parent.id},
-            name="llm_call", as_type="generation",
+        gen = _start_nested(
+            parent, name="llm_call", as_type="generation",
             model=event.resolved_deployment,
             usage_details=usage or None,
             cost_details=cost,
@@ -200,23 +212,16 @@ class LangfuseSink:
     def _on_generic_child(self, event: RunEvent, state: Dict[str, Any], name: str) -> None:
         parent = self._current_parent(state, event.stage)
         as_type = _STAGE_OBSERVATION_TYPES.get(event.event_type)
-        client = _get_client()
         metadata = {
             "message": event.message, "detail": event.detail,
             "tokens_saved": event.tokens_saved, "cost_avoided_usd": event.cost_avoided_usd,
             "seconds_saved": event.seconds_saved,
         }
         if as_type is not None:
-            obs = client.start_observation(
-                trace_context={"trace_id": state["trace_id"], "parent_span_id": parent.id},
-                name=name, as_type=as_type, metadata=metadata,
-            )
+            obs = _start_nested(parent, name=name, as_type=as_type, metadata=metadata)
             obs.end()
         else:
-            client.create_event(
-                trace_context={"trace_id": state["trace_id"], "parent_span_id": parent.id},
-                name=name, metadata=metadata,
-            )
+            _event_nested(parent, name=name, metadata=metadata)
 
     def _on_run_finished(self, event: RunEvent, state: Dict[str, Any]) -> None:
         state["root"].update(output={"message": event.message})
