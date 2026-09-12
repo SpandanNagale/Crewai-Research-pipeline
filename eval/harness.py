@@ -10,7 +10,7 @@ instance of the API:
   recorded. Deterministic pass/fail. Needs to run in the same process/DB as
   the harness (not just against a remote base_url).
 - "easy" / "ambiguous" / "low_resource" entries: POST /research/stream,
-  consume the live SSE event stream (same protocol static/script.js parses),
+  consume the live SSE event stream (same protocol frontend/lib/sse.ts parses),
   and compute this run's metrics via eval.metrics. Statistical, not gated --
   reported in the aggregate, not pass/fail, since there is no verified
   historical baseline yet to compare against (see README's Evaluation
@@ -75,7 +75,7 @@ def load_golden_set(path: Path = GOLDEN_SET_PATH) -> List[dict]:
 
 
 def _parse_sse_stream(response: httpx.Response):
-    """Yields (event_type, data_dict) for each SSE frame -- mirrors static/script.js."""
+    """Yields (event_type, data_dict) for each SSE frame -- mirrors frontend/lib/sse.ts."""
     event_type = "message"
     data_lines: List[str] = []
     for raw_line in response.iter_lines():

@@ -285,4 +285,14 @@ def test_get_groundedness_returns_claims_for_a_known_question():
     assert response.status_code == 200
     body = response.json()
     assert body["question_id"] == question_id
+    assert body["threshold"] == pytest.approx(0.7)
     assert body["claims"][0]["claim_text"] == "A"
+
+
+def test_cors_allows_configured_frontend_origin():
+    with TestClient(app_module.app) as client:
+        response = client.options(
+            "/health",
+            headers={"Origin": "http://localhost:3000", "Access-Control-Request-Method": "GET"},
+        )
+    assert response.headers.get("access-control-allow-origin") == "http://localhost:3000"

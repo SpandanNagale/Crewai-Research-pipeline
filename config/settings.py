@@ -42,6 +42,15 @@ class Settings:
 
     OUTPUTS_DIR: str = os.path.join(os.path.dirname(__file__), "..", "outputs")
 
+    # ── Frontend (Phase 8) ───────────────────────────────────────────────
+    # FastAPI is API-only now (the Next.js app in frontend/ is the UI) --
+    # comma-separated list of origins allowed to call this API cross-origin.
+    CORS_ALLOWED_ORIGINS: list = [
+        o.strip() for o in os.getenv(
+            "CORS_ALLOWED_ORIGINS", "http://localhost:3000"
+        ).split(",") if o.strip()
+    ]
+
     # ── Langfuse tracing (Phase 7, opt-in) ──────────────────────────────
     # Unset by default: EventBus falls back to the no-op trace sink, no
     # network calls attempted, nothing in the UI/API breaks.

@@ -7,12 +7,12 @@ import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from crew.research_crew import PipelineStageError, ResearchCrew
+from config.settings import settings
+from crew.research_crew import GROUNDEDNESS_THRESHOLD, PipelineStageError, ResearchCrew
 from db import repository
 from db.session import init_db
 from eval.scorer import score_report
@@ -46,13 +46,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.mount("/static", StaticFiles(directory="static"), name="static")
-templates = Jinja2Templates(directory="templates")
-
-
-@app.get("/")
-def index(request: Request):
-    return templates.TemplateResponse(request, "index.html")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.CORS_ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class ResearchRequest(BaseModel):
@@ -341,7 +341,11 @@ def get_groundedness(question_id: int):
     question = repository.get_question(question_id)
     if question is None:
         raise HTTPException(status_code=404, detail="Unknown question_id.")
-    return {"question_id": question_id, "claims": repository.get_claim_groundings(question_id)}
+    return {
+        "question_id": question_id,
+        "claims": repository.get_claim_groundings(question_id),
+        "threshold": GROUNDEDNESS_THRESHOLD,
+    }
 
 
 @app.get("/knowledge/search")
