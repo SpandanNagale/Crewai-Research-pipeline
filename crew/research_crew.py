@@ -187,6 +187,7 @@ class ResearchCrew:
                 validate_topic(topic)
             except GuardrailBlockedError as e:
                 emit_event("guardrail_fired", message=e.reason, detail=e.reason)
+                emit_event("run_finished", message="blocked", detail=e.reason)
                 raise PipelineStageError("input", e.reason, ErrorCode.GUARDRAIL_BLOCKED)
 
             if resume_question_id is None:
@@ -227,6 +228,7 @@ class ResearchCrew:
                     for remaining in self.STAGES[i + 1:]:
                         repository.set_stage_state(run_id, remaining, NodeState.NOT_REACHED.value)
                     repository.set_run_status(run_id, "failed")
+                    emit_event("run_finished", message="failed", detail=e.detail)
                     raise
 
                 if stage_outputs.pop("_skipped_cached", False):
@@ -253,7 +255,12 @@ class ResearchCrew:
 
             self._index_for_reuse(question_id, topic, conclusion_text, findings, conclusion_id)
             repository.set_run_status(run_id, "succeeded")
-            emit_event("run_finished")
+            groundedness_score = stage_outputs.get("groundedness_score")
+            emit_event(
+                "run_finished",
+                score_name="groundedness" if groundedness_score is not None else None,
+                score_value=groundedness_score,
+            )
 
             sub_questions = stage_outputs.get("sub_questions", [])
             unresolved = stage_outputs.get("unresolved_sub_questions", [])

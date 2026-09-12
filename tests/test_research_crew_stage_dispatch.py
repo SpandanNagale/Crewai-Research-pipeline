@@ -107,6 +107,57 @@ def test_mid_pipeline_failure_marks_downstream_stages_not_reached(monkeypatch):
     assert repository.get_run("run-fail")["status"] == "failed"
 
 
+class _RecordingSink:
+    def __init__(self):
+        self.events = []
+
+    def emit(self, event):
+        self.events.append(event)
+
+
+def test_mid_pipeline_failure_still_emits_run_finished(monkeypatch):
+    """A terminal run_finished must always fire, even on failure -- LangfuseSink relies
+    on it (or an equivalent) to close out a run's trace and free its in-memory span."""
+    crew = ResearchCrew()
+    _stub_success(crew, monkeypatch)
+    monkeypatch.setattr(
+        crew, "_run_comparison_stage",
+        lambda question_id, findings: (_ for _ in ()).throw(
+            PipelineStageError("evidence_comparator", "boom", ErrorCode.PROVIDER_UNAVAILABLE)
+        ),
+    )
+    recorder = _RecordingSink()
+    EventBus.instance().sinks.append(recorder)
+
+    with pytest.raises(PipelineStageError):
+        crew.run_with_meta("test topic", force_rerun=True, run_id="run-fail-events")
+
+    run_finished = [e for e in recorder.events if e.event_type == "run_finished"]
+    assert len(run_finished) == 1
+    assert run_finished[0].message == "failed"
+    assert run_finished[0].detail == "boom"
+
+
+def test_guardrail_blocked_still_emits_run_finished(monkeypatch):
+    from guardrails.input_guardrail import GuardrailBlockedError
+
+    crew = ResearchCrew()
+    monkeypatch.setattr(
+        "crew.research_crew.validate_topic",
+        lambda topic: (_ for _ in ()).throw(GuardrailBlockedError("too_short")),
+    )
+    recorder = _RecordingSink()
+    EventBus.instance().sinks.append(recorder)
+
+    with pytest.raises(PipelineStageError):
+        crew.run_with_meta("hi", force_rerun=True, run_id="run-blocked-events")
+
+    run_finished = [e for e in recorder.events if e.event_type == "run_finished"]
+    assert len(run_finished) == 1
+    assert run_finished[0].message == "blocked"
+    assert run_finished[0].detail == "too_short"
+
+
 def test_degraded_researcher_stage_does_not_abort_the_run(monkeypatch):
     crew = ResearchCrew()
     _stub_success(crew, monkeypatch)

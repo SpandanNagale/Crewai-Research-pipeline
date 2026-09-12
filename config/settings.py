@@ -42,5 +42,12 @@ class Settings:
 
     OUTPUTS_DIR: str = os.path.join(os.path.dirname(__file__), "..", "outputs")
 
+    # ── Langfuse tracing (Phase 7, opt-in) ──────────────────────────────
+    # Unset by default: EventBus falls back to the no-op trace sink, no
+    # network calls attempted, nothing in the UI/API breaks.
+    LANGFUSE_PUBLIC_KEY: str = os.getenv("LANGFUSE_PUBLIC_KEY", "")
+    LANGFUSE_SECRET_KEY: str = os.getenv("LANGFUSE_SECRET_KEY", "")
+    LANGFUSE_HOST: str = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
+
 
 settings = Settings()

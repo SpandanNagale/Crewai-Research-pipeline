@@ -10,6 +10,7 @@ import queue
 import threading
 from typing import Dict, List, Optional, Protocol
 
+from observability import langfuse_sink
 from observability.events import RunEvent
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,8 @@ class EventBus:
 
     def __init__(self) -> None:
         self.sinks: List[Sink] = [StdoutSink(), QueueSink(), NoOpTraceSink()]
+        if langfuse_sink.is_configured():
+            self.sinks.append(langfuse_sink.LangfuseSink())
 
     @classmethod
     def instance(cls) -> "EventBus":
