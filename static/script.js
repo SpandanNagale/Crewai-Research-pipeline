@@ -16,6 +16,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const finalEvalContent = document.getElementById('final-eval-content');
     const evalScoresPre = document.getElementById('eval-scores-pre');
     const cacheSavingsBadge = document.getElementById('cache-savings');
+    const traceLink = document.getElementById('trace-link');
 
     let cacheSavings = { costUsd: 0, tokens: 0, seconds: 0 };
 
@@ -46,6 +47,7 @@ document.addEventListener('DOMContentLoaded', () => {
         systemStatus.classList.add('running');
         consoleOutput.innerHTML = ''; // Clear console
         resetCacheSavings();
+        traceLink.classList.add('hidden');
 
         appendLog(`[SYSTEM] Initializing task: "${topic}"...`, 'system-msg');
         
@@ -144,6 +146,12 @@ document.addEventListener('DOMContentLoaded', () => {
             if (payload.eval) {
                 finalEvalContent.classList.remove('hidden');
                 evalScoresPre.textContent = JSON.stringify(payload.eval, null, 2);
+            }
+            if (payload.trace_url) {
+                traceLink.href = payload.trace_url;
+                traceLink.classList.remove('hidden');
+            } else {
+                traceLink.classList.add('hidden');
             }
         }
     }

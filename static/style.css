@@ -469,6 +469,22 @@ textarea:focus {
     color: #e2e8f0;
 }
 
+.trace-link {
+    display: inline-block;
+    margin-bottom: 16px;
+    padding: 4px 10px;
+    border: 1px solid #2dd4bf;
+    border-radius: 4px;
+    color: #2dd4bf;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.8rem;
+    text-decoration: none;
+}
+
+.trace-link:hover {
+    background: rgba(45, 212, 191, 0.1);
+}
+
 .report-content {
     line-height: 1.6;
 }
