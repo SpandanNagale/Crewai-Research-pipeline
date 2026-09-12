@@ -1,5 +1,6 @@
 from datetime import datetime
 
+from observability.budget import BudgetSink
 from observability.bus import EventBus, NoOpTraceSink, QueueSink, StdoutSink
 from observability.events import RunEvent
 
@@ -16,6 +17,7 @@ def test_instance_returns_singleton_with_default_sinks():
     assert any(isinstance(s, StdoutSink) for s in bus.sinks)
     assert any(isinstance(s, QueueSink) for s in bus.sinks)
     assert any(isinstance(s, NoOpTraceSink) for s in bus.sinks)
+    assert any(isinstance(s, BudgetSink) for s in bus.sinks)
 
 
 def test_emit_delivers_to_queue_sink_isolated_by_run_id():

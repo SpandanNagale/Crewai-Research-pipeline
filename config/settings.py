@@ -58,5 +58,15 @@ class Settings:
     LANGFUSE_SECRET_KEY: str = os.getenv("LANGFUSE_SECRET_KEY", "")
     LANGFUSE_HOST: str = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
 
+    # ── Deployment hardening (Phase 9) ───────────────────────────────────
+    # Hard kill-switch on real LLM spend across the whole deployment (not
+    # per-user) -- 0 disables it. See observability/budget.py.
+    DAILY_BUDGET_USD: float = float(os.getenv("DAILY_BUDGET_USD", "0"))
+    # Requests per minute per client IP on the expensive /research* endpoints
+    # -- 0 disables it. In-memory, per-process: fine for the single-instance
+    # deployment this project targets; a multi-instance deployment needs a
+    # shared store (Redis) instead, see app.py::RateLimiter's docstring.
+    RATE_LIMIT_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "0"))
+
 
 settings = Settings()
