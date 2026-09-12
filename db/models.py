@@ -131,3 +131,34 @@ class SearchCacheEntry(Base):
     results_json = Column(JSON, nullable=False)
     latency_ms = Column(Float, nullable=True)
     fetched_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class Job(Base):
+    """
+    Status of a POST /research/async job (defect #14: this used to live only
+    in worker/job_manager.py's in-memory dict, so a process restart silently
+    lost every in-flight/completed job's status).
+    """
+    __tablename__ = "jobs"
+
+    job_id = Column(String, primary_key=True)
+    status = Column(String, nullable=False, default="pending")  # pending|running|done|failed
+    result = Column(JSON, nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class BudgetEntry(Base):
+    """
+    Append-only ledger of real LLM spend (RunEvent.cost_usd on every
+    llm_attempt, see observability/budget.py::BudgetSink) -- summed over
+    "today" to enforce settings.DAILY_BUDGET_USD's hard kill-switch. Kept
+    granular (one row per attempt) rather than a running counter so it can't
+    drift and needs no read-modify-write locking.
+    """
+    __tablename__ = "budget_entries"
+
+    id = Column(Integer, primary_key=True)
+    amount_usd = Column(Float, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

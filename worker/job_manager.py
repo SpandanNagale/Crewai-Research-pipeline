@@ -1,28 +1,29 @@
 """
 Minimal in-process async job runner.
 
-This is intentionally NOT Celery: it's a ThreadPoolExecutor plus an
-in-memory status dict, just enough so that POST /research/async can return
-immediately with a job_id instead of blocking a request thread for the
-duration of a full research pipeline run.
+This is intentionally NOT Celery: it's a ThreadPoolExecutor, just enough so
+that POST /research/async can return immediately with a job_id instead of
+blocking a request thread for the duration of a full research pipeline run.
 
-Scaling this to a real queue (see README "Scaling" section) means swapping
-`submit()`'s body for `task.delay(*args, **kwargs)` on a Celery task backed
-by Redis/RabbitMQ, and swapping the in-memory `_jobs` dict for a `jobs` table
-(or Redis hash) so status survives a process restart and is visible across
-multiple worker processes.
+Status is persisted to the `jobs` table (db/repository.py) rather than an
+in-memory dict (fixed defect #14: a process restart used to silently lose
+every in-flight/completed job's status -- GET /jobs/{job_id} would 404 for a
+job that had, in reality, completed just fine). The execution itself is
+still in-process and does not survive a restart -- scaling that out to a
+real queue (see README "Scaling" section) means swapping `submit()`'s body
+for `task.delay(*args, **kwargs)` on a Celery task backed by Redis/RabbitMQ;
+the `jobs` table already gives that a durable status store to write to.
 """
 import logging
-import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Optional
 
+from db import repository
+
 logger = logging.getLogger(__name__)
 
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="research-job")
-_jobs: dict = {}
-_lock = threading.Lock()
 
 
 def submit(fn: Callable[..., Any], *args, job_id: Optional[str] = None, **kwargs) -> str:
@@ -33,28 +34,20 @@ def submit(fn: Callable[..., Any], *args, job_id: Optional[str] = None, **kwargs
     freshly generated one otherwise.
     """
     job_id = job_id or str(uuid.uuid4())
-    with _lock:
-        _jobs[job_id] = {"status": "pending", "result": None, "error": None}
+    repository.create_job(job_id)
 
     def _run():
-        with _lock:
-            _jobs[job_id]["status"] = "running"
+        repository.set_job_status(job_id, "running")
         try:
             result = fn(*args, **kwargs)
-            with _lock:
-                _jobs[job_id]["status"] = "done"
-                _jobs[job_id]["result"] = result
+            repository.set_job_status(job_id, "done", result=result)
         except Exception as e:
             logger.error("Background job %s failed: %s", job_id, e)
-            with _lock:
-                _jobs[job_id]["status"] = "failed"
-                _jobs[job_id]["error"] = str(e)
+            repository.set_job_status(job_id, "failed", error=str(e))
 
     _executor.submit(_run)
     return job_id
 
 
 def get_job(job_id: str) -> Optional[dict]:
-    with _lock:
-        job = _jobs.get(job_id)
-        return dict(job) if job is not None else None
+    return repository.get_job(job_id)

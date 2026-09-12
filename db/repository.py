@@ -7,8 +7,8 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from db.models import (
-    ClaimGrounding, Conclusion, Contradiction, Finding, PipelineRun, PipelineStageState,
-    ResearchQuestion, SearchCacheEntry, Source,
+    BudgetEntry, ClaimGrounding, Conclusion, Contradiction, Finding, Job, PipelineRun,
+    PipelineStageState, ResearchQuestion, SearchCacheEntry, Source,
 )
 from db.session import get_session
 
@@ -379,6 +379,46 @@ def set_cached_search(query_key: str, results: List[dict], latency_ms: Optional[
             row.results_json = results
             row.latency_ms = latency_ms
             row.fetched_at = datetime.utcnow()
+
+
+def create_job(job_id: str) -> None:
+    with get_session() as session:
+        session.add(Job(job_id=job_id, status="pending"))
+
+
+def set_job_status(job_id: str, status: str, result: Optional[dict] = None, error: Optional[str] = None) -> None:
+    with get_session() as session:
+        job = session.get(Job, job_id)
+        if job is None:
+            return
+        job.status = status
+        job.result = result
+        job.error = error
+        job.updated_at = datetime.utcnow()
+
+
+def get_job(job_id: str) -> Optional[dict]:
+    with get_session() as session:
+        job = session.get(Job, job_id)
+        if job is None:
+            return None
+        return {
+            "job_id": job.job_id,
+            "status": job.status,
+            "result": job.result,
+            "error": job.error,
+        }
+
+
+def record_spend(amount_usd: float) -> None:
+    with get_session() as session:
+        session.add(BudgetEntry(amount_usd=amount_usd))
+
+
+def get_spend_since(cutoff: datetime) -> float:
+    with get_session() as session:
+        rows = session.query(BudgetEntry.amount_usd).filter(BudgetEntry.created_at >= cutoff).all()
+        return sum(amount for (amount,) in rows)
 
 
 def list_questions(limit: int = 50) -> List[dict]:
