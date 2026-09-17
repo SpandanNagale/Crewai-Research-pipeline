@@ -1,7 +1,6 @@
 .git
 .env
 *.db
-chroma_db/
 outputs/*
 !outputs/.gitkeep
 __pycache__/

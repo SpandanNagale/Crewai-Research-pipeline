@@ -1,9 +1,21 @@
-# Reproducible local runs (build-prompt Phase 9's requirement) -- not a
-# production deployment topology. In production the frontend deploys to
-# Vercel and the backend to Render/HF Spaces (see README's Deployment
-# section); this just brings both up together against a real .env for
-# local development or a demo.
+# Reproducible local runs, matching the deployed topology (backend on
+# Railway against Neon Postgres+pgvector, frontend on Vercel) as closely as
+# a single-machine compose file can -- see README's Deployment section.
 services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: research
+      POSTGRES_PASSWORD: research
+      POSTGRES_DB: research
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U research"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   backend:
     build: .
     ports:
@@ -12,16 +24,11 @@ services:
       - .env
     environment:
       CORS_ALLOWED_ORIGINS: http://localhost:3000
-      # research.db lives wherever DATABASE_URL points (default: the repo
-      # root) -- redirect it into the mounted volume below. chroma_db/'s
-      # path is hardcoded (memory/vector_store.py), so it's mounted directly.
-      DATABASE_URL: sqlite:////app/data/research.db
-    volumes:
-      # Persist across `docker compose down`/restarts -- see Dockerfile and
-      # README's Deployment section on why this (not managed Postgres/a
-      # hosted vector store) is the explicit persistence choice for now.
-      - research-db:/app/data
-      - chroma-db:/app/chroma_db
+      DATABASE_URL: postgresql+psycopg://research:research@db:5432/research
+      VECTOR_BACKEND: pgvector
+    depends_on:
+      db:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
@@ -40,5 +47,4 @@ services:
         condition: service_healthy
 
 volumes:
-  research-db:
-  chroma-db:
+  pgdata:

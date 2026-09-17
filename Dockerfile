@@ -1,27 +1,30 @@
 # FastAPI backend only -- the frontend/ Next.js app has its own Dockerfile
-# and is normally deployed separately (Vercel), see README's Deployment
-# section. This image is for the API + CLI.
+# and is deployed separately (Vercel), see README's Deployment section.
+# This image is for the API + CLI, targeting Railway.
+#
+# No build-essential: verified with a real `docker build` (no compiler
+# stage) that every dependency installs from prebuilt wheels. Note this
+# does NOT mean chromadb/onnxruntime/tokenizers are gone from the image --
+# crewai itself unconditionally depends on all three (see its own
+# dependency metadata, unrelated to whether this project's code uses
+# Chroma). Dropping our own chromadb pin only removes a redundant version
+# constraint, not the package.
 FROM python:3.12-slim
 
 WORKDIR /app
-
-# System deps for building any C-extension wheels chromadb/tokenizers pull in.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# research.db (path from config/settings.py::DATABASE_URL, overridable) and
-# chroma_db/ (hardcoded in memory/vector_store.py -- not currently
-# configurable) are created here, at the repo root, on first use -- both
-# ephemeral unless DATABASE_URL is redirected into a mounted volume and
-# chroma_db/ is mounted directly, as docker-compose.yml does. See README's
-# Deployment section for why that's the explicit choice here rather than
-# managed Postgres + a hosted vector store.
+# Storage is managed Postgres + pgvector (Neon), not local disk -- this
+# image assumes DATABASE_URL points at Postgres and VECTOR_BACKEND=pgvector
+# (see docker-compose.yml for the local equivalent). Schema is owned by
+# Alembic, run here as a start step rather than lazily on first request so
+# a migration never races two concurrent cold requests.
+#
+# Railway injects $PORT at runtime; never hardcode 8000 in CMD.
 EXPOSE 8000
 
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD alembic upgrade head && uvicorn app:app --host 0.0.0.0 --port ${PORT:-8000}
