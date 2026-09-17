@@ -34,7 +34,31 @@ class Settings:
     # ── Persistence ──────────────────────────────────────────────────
     _default_db_path = os.path.join(os.path.dirname(__file__), "..", "research.db")
     DATABASE_URL: str = os.getenv("DATABASE_URL", f"sqlite:///{_default_db_path}")
-    KNOWLEDGE_REUSE_THRESHOLD: float = float(os.getenv("KNOWLEDGE_REUSE_THRESHOLD", "0.87"))
+    # pgvector requires settings.DATABASE_URL to point at Postgres; memory is
+    # an in-process NumPy backend for local dev / tests with no DB dependency.
+    VECTOR_BACKEND: str = os.getenv("VECTOR_BACKEND", "memory")
+    # Calibrated empirically 2026-09-17 against gemini-embedding-001 @ 768
+    # dims via `python -m eval.calibrate_reuse`: true-match (paraphrase)
+    # pairs scored 0.8405-0.9416 cosine similarity, near-miss (same-domain,
+    # different-question) pairs scored 0.4836-0.6634 -- a clean gap, so
+    # 0.75 (the midpoint) is used rather than hugging either edge. This
+    # REPLACES the 0.87 value tuned for Chroma's all-MiniLM-L6-v2 default
+    # embedding function, which is NOT comparable: different embedding
+    # models produce different cosine similarity distributions entirely
+    # (notably, Gemini's near-miss scores here sit well below 0.87, not
+    # above it -- carrying the old value forward would have made reuse
+    # nearly impossible, not falsely trigger it). Re-run the calibration
+    # script and update this value if EMBEDDING_MODEL or
+    # EMBEDDING_DIMENSIONS ever changes.
+    KNOWLEDGE_REUSE_THRESHOLD: float = float(os.getenv("KNOWLEDGE_REUSE_THRESHOLD", "0.75"))
+
+    # ── Embeddings (Gemini, via google-genai) ─────────────────────────
+    EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "gemini-embedding-001")
+    # 768, not the model's native 3072: pgvector cannot build an HNSW or
+    # IVFFlat index on vectors above 2000 dimensions, which would force a
+    # sequential scan on every reuse/cache lookup.
+    EMBEDDING_DIMENSIONS: int = int(os.getenv("EMBEDDING_DIMENSIONS", "768"))
+    EMBEDDING_BATCH_SIZE: int = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
 
     # ── Caching (Phase 5) ──────────────────────────────────────────────
     # Search results go stale; TTL-bound the cache rather than caching forever.

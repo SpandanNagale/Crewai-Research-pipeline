@@ -1,12 +1,17 @@
 """
 Knowledge reuse: before running a full pipeline for a new question, embed
-the topic and compare it against past research_questions via ChromaDB. If a
-close-enough match exists, surface its existing findings/conclusions instead
-of (or in addition to) re-running full research.
+the topic and compare it against past research_questions. If a close-enough
+match exists, surface its existing findings/conclusions instead of (or in
+addition to) re-running full research.
 
 Also maintains a second, finer-grained index over individual findings and
 conclusions for the GET /knowledge/search semantic-search endpoint.
+
+Written entirely against memory.vector_store.ResearchMemory's public
+interface -- never against a backend-specific client -- so the storage
+engine can change without touching this file.
 """
+import hashlib
 import logging
 from typing import List, Optional
 
@@ -21,6 +26,10 @@ KNOWLEDGE_COLLECTION = "knowledge_index"
 SUBQUESTIONS_COLLECTION = "sub_questions_index"
 
 
+def _make_id(text: str) -> str:
+    return hashlib.md5(text.encode()).hexdigest()
+
+
 class KnowledgeReuseChecker:
     def __init__(self):
         self._questions_memory = ResearchMemory(collection_name=QUESTIONS_COLLECTION)
@@ -33,32 +42,23 @@ class KnowledgeReuseChecker:
         question if its similarity to `topic` is >= KNOWLEDGE_REUSE_THRESHOLD,
         else None.
         """
-        if self._questions_memory.count() == 0:
-            return None
-
         try:
-            results = self._questions_memory.collection.query(
-                query_texts=[topic],
-                n_results=1,
-                include=["metadatas", "distances"],
-            )
+            hits = self._questions_memory.search(topic, n_results=1)
         except Exception as e:
             logger.warning("Knowledge reuse similarity search failed: %s", e)
             return None
 
-        ids = results.get("ids", [[]])[0]
-        if not ids:
+        if not hits:
             return None
 
-        distance = results["distances"][0][0]
-        similarity = 1 - distance  # cosine space: distance = 1 - cosine_similarity
-        if similarity < settings.KNOWLEDGE_REUSE_THRESHOLD:
+        best = hits[0]
+        if best.similarity < settings.KNOWLEDGE_REUSE_THRESHOLD:
             return None
 
-        question_id = int(results["metadatas"][0][0]["question_id"])
+        question_id = int(best.metadata["question_id"])
         trace = repository.get_trace(question_id)
         if trace is not None:
-            trace["similarity"] = round(similarity, 4)
+            trace["similarity"] = round(best.similarity, 4)
         return trace
 
     def find_similar_subquestion(self, sub_question: str) -> Optional[dict]:
@@ -70,34 +70,26 @@ class KnowledgeReuseChecker:
         real (not estimated) latency/tokens/cost recorded when those findings
         were originally produced -- see index_sub_question.
         """
-        if self._subquestions_memory.count() == 0:
-            return None
         try:
-            results = self._subquestions_memory.collection.query(
-                query_texts=[sub_question],
-                n_results=1,
-                include=["metadatas", "distances"],
-            )
+            hits = self._subquestions_memory.search(sub_question, n_results=1)
         except Exception as e:
             logger.warning("Sub-question cache lookup failed: %s", e)
             return None
 
-        ids = results.get("ids", [[]])[0]
-        if not ids:
+        if not hits:
             return None
 
-        distance = results["distances"][0][0]
-        similarity = 1 - distance
-        if similarity < settings.KNOWLEDGE_REUSE_THRESHOLD:
+        best = hits[0]
+        if best.similarity < settings.KNOWLEDGE_REUSE_THRESHOLD:
             return None
 
-        meta = results["metadatas"][0][0]
-        finding_ids = [int(x) for x in meta["finding_ids"].split(",") if x]
+        meta = best.metadata
+        finding_ids = meta.get("finding_ids") or []
         if not finding_ids:
             return None
         return {
-            "similarity": round(similarity, 4),
-            "finding_ids": finding_ids,
+            "similarity": round(best.similarity, 4),
+            "finding_ids": [int(i) for i in finding_ids],
             "latency_ms": meta.get("latency_ms"),
             "prompt_tokens": meta.get("prompt_tokens"),
             "completion_tokens": meta.get("completion_tokens"),
@@ -113,9 +105,7 @@ class KnowledgeReuseChecker:
         completion_tokens: Optional[int] = None,
         cost_usd: Optional[float] = None,
     ) -> None:
-        # Chroma metadata values must be scalar (str/int/float/bool) -- finding_ids
-        # is stored as a comma-joined string and parsed back in find_similar_subquestion.
-        metadata: dict = {"finding_ids": ",".join(str(i) for i in finding_ids)}
+        metadata: dict = {"finding_ids": list(finding_ids)}
         if latency_ms is not None:
             metadata["latency_ms"] = latency_ms
         if prompt_tokens is not None:
@@ -124,54 +114,38 @@ class KnowledgeReuseChecker:
             metadata["completion_tokens"] = completion_tokens
         if cost_usd is not None:
             metadata["cost_usd"] = cost_usd
-        self._subquestions_memory.collection.upsert(
-            ids=[self._subquestions_memory._make_id(sub_question)],
-            documents=[sub_question],
-            metadatas=[metadata],
-        )
+        self._subquestions_memory.upsert(_make_id(sub_question), sub_question, metadata)
 
     def index_question(self, question_id: int, topic: str, conclusion_text: str) -> None:
         # Embed the topic alone (not the conclusion) so similarity reflects
         # "is this the same question", not diluted by unrelated answer text.
-        self._questions_memory.collection.upsert(
-            ids=[f"question-{question_id}"],
-            documents=[topic],
-            metadatas=[{"question_id": question_id, "topic": topic}],
+        self._questions_memory.upsert(
+            f"question-{question_id}", topic, {"question_id": question_id, "topic": topic}
         )
 
     def index_finding(self, finding_id: int, question_id: int, text: str) -> None:
-        self._knowledge_memory.collection.upsert(
-            ids=[f"finding-{finding_id}"],
-            documents=[text],
-            metadatas=[{"type": "finding", "id": finding_id, "question_id": question_id}],
+        self._knowledge_memory.upsert(
+            f"finding-{finding_id}",
+            text,
+            {"type": "finding", "id": finding_id, "question_id": question_id},
         )
 
     def index_conclusion(self, conclusion_id: int, question_id: int, text: str) -> None:
-        self._knowledge_memory.collection.upsert(
-            ids=[f"conclusion-{conclusion_id}"],
-            documents=[text],
-            metadatas=[{"type": "conclusion", "id": conclusion_id, "question_id": question_id}],
+        self._knowledge_memory.upsert(
+            f"conclusion-{conclusion_id}",
+            text,
+            {"type": "conclusion", "id": conclusion_id, "question_id": question_id},
         )
 
     def search_knowledge(self, query: str, n_results: int = 8) -> list:
-        if self._knowledge_memory.count() == 0:
-            return []
-        results = self._knowledge_memory.collection.query(
-            query_texts=[query],
-            n_results=min(n_results, self._knowledge_memory.count()),
-            include=["metadatas", "documents", "distances"],
-        )
-        output = []
-        for doc, meta, distance in zip(
-            results["documents"][0], results["metadatas"][0], results["distances"][0]
-        ):
-            output.append(
-                {
-                    "type": meta.get("type"),
-                    "id": meta.get("id"),
-                    "question_id": meta.get("question_id"),
-                    "text": doc,
-                    "similarity": round(1 - distance, 4),
-                }
-            )
-        return output
+        hits = self._knowledge_memory.search(query, n_results=n_results)
+        return [
+            {
+                "type": hit.metadata.get("type"),
+                "id": hit.metadata.get("id"),
+                "question_id": hit.metadata.get("question_id"),
+                "text": hit.document,
+                "similarity": round(hit.similarity, 4),
+            }
+            for hit in hits
+        ]
