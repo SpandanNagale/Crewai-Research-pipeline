@@ -8,10 +8,37 @@ conclusion can always be walked back to the raw sources that support it.
 """
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, JSON, String, Text
+from pgvector.sqlalchemy import Vector
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    JSON,
+    MetaData,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import declarative_base, relationship
 
-Base = declarative_base()
+from config.settings import settings
+
+# Stable, predictable constraint/index names so future `alembic revision
+# --autogenerate` runs produce consistent output instead of Postgres's
+# default anonymous names (which change across DB versions/runs).
+_NAMING_CONVENTION = {
+    "ix": "ix_%(column_0_label)s",
+    "uq": "uq_%(table_name)s_%(column_0_name)s",
+    "ck": "ck_%(table_name)s_%(constraint_name)s",
+    "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
+    "pk": "pk_%(table_name)s",
+}
+Base = declarative_base(metadata=MetaData(naming_convention=_NAMING_CONVENTION))
 
 
 class ResearchQuestion(Base):
@@ -161,4 +188,36 @@ class BudgetEntry(Base):
 
     id = Column(Integer, primary_key=True)
     amount_usd = Column(Float, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class VectorDocument(Base):
+    """
+    Backing store for memory/vector_backend.py::PgVectorBackend. One table
+    with a `collection` discriminator rather than one table per logical
+    collection (research_questions_index | knowledge_index |
+    sub_questions_index) -- three near-identical tables would be worse, and
+    every caller already scopes its query to one collection.
+    """
+    __tablename__ = "vector_documents"
+    __table_args__ = (
+        UniqueConstraint("collection", "doc_id", name="uq_vector_documents_collection_doc_id"),
+        Index("ix_vector_documents_collection", "collection"),
+        # Declared here (not just in the alembic migration) so that a future
+        # `alembic revision --autogenerate` diffs against this and doesn't
+        # propose dropping it as drift.
+        Index(
+            "ix_vector_documents_embedding_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+    )
+
+    id = Column(BigInteger, primary_key=True)
+    collection = Column(String, nullable=False)
+    doc_id = Column(String, nullable=False)
+    document = Column(Text, nullable=False)
+    metadata_ = Column("metadata", JSON, nullable=False, default=dict)
+    embedding = Column(Vector(settings.EMBEDDING_DIMENSIONS), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
