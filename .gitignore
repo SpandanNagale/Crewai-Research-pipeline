@@ -11,3 +11,4 @@ chroma_db/
 .DS_Store
 *.db
 research.db
+.vercel
