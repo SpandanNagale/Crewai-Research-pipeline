@@ -1,5 +1,5 @@
 # Reproducible local runs, matching the deployed topology (backend on
-# Railway against Neon Postgres+pgvector, frontend on Vercel) as closely as
+# Render against Neon Postgres+pgvector, frontend on Vercel) as closely as
 # a single-machine compose file can -- see README's Deployment section.
 services:
   db:

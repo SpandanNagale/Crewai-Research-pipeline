@@ -1,0 +1,44 @@
+# Render Blueprint for the FastAPI backend (app.py), built from ./Dockerfile.
+# The frontend stays on Vercel and the database stays on Neon -- see README's
+# Deployment section. In Render: New -> Blueprint -> pick this repo; Render
+# prompts for every `sync: false` value below on first deploy.
+services:
+  - type: web
+    name: research-pipeline-backend
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # ── Storage (Neon pooled URL, psycopg v3 driver) ──────────────────
+      - key: DATABASE_URL
+        sync: false
+      - key: VECTOR_BACKEND
+        value: pgvector
+      # ── LLM providers (all four needed by the default model_groups) ──
+      - key: GROQ_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: OLLAMA_API_KEY
+        sync: false
+      # ── Search ───────────────────────────────────────────────────────
+      - key: SERPER_API_KEY
+        sync: false
+      # ── Frontend origin (comma-separated if more than one) ───────────
+      - key: CORS_ALLOWED_ORIGINS
+        value: https://research-pipeline-frontend.vercel.app
+      # ── Langfuse (optional, leave blank to disable tracing) ──────────
+      - key: LANGFUSE_PUBLIC_KEY
+        sync: false
+      - key: LANGFUSE_SECRET_KEY
+        sync: false
+      # ── Hardening ────────────────────────────────────────────────────
+      - key: DAILY_BUDGET_USD
+        sync: false
+      - key: RATE_LIMIT_PER_MINUTE
+        sync: false
