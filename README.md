@@ -309,7 +309,7 @@ A call tries each deployment in order, advancing on a transient failure (timeout
 
 `GEMINI_API_KEY` powers two independent things: the `gemini` chat deployments above, and `memory/embedder.py`'s embedding calls (used for knowledge reuse and semantic search, see [Knowledge reuse](#knowledge-reuse)) — the same key, two different Gemini API surfaces.
 
-**`ollama_local` is deliberately absent from every `model_groups` chain above** — it needs a local Ollama server, which can't exist on a deployed instance (Railway, HF Spaces, …). It stays available as a `_PROVIDERS` entry for local development (point `llm/provider.py`'s `OllamaLocalProvider` at it directly, or add it to a chain, if you're running everything on your own machine), but the deployed config must never depend on it — see [Deployment](#-deployment).
+**`ollama_local` is deliberately absent from every `model_groups` chain above** — it needs a local Ollama server, which can't exist on a deployed instance (Render, HF Spaces, …). It stays available as a `_PROVIDERS` entry for local development (point `llm/provider.py`'s `OllamaLocalProvider` at it directly, or add it to a chain, if you're running everything on your own machine), but the deployed config must never depend on it — see [Deployment](#-deployment).
 
 **If every deployment in a chain fails**, the pipeline does **not** silently return an empty report: the failing stage raises a `PipelineStageError` naming the stage and the underlying error, the API returns `502` with that detail (or `400` for a guardrail block, `503` for an exhausted budget), and the CLI surfaces the same message.
 
@@ -339,9 +339,9 @@ The current setup (`worker/job_manager.py` + Postgres) is deliberately minimal s
 
 ## 🚢 Deployment
 
-Target topology: **frontend on Vercel** (native Next.js build), **backend (`app.py`) on Railway** (from `Dockerfile`), **Postgres + pgvector on Neon**. One database now covers both the relational traceability layer and vector storage — see [Knowledge reuse](#knowledge-reuse) for why that collapsed into a single Postgres instance rather than a separate hosted vector store. `docker-compose.yml` mirrors this topology locally (a real `pgvector/pgvector:pg16` container in place of Neon) rather than the SQLite-only setup a bare `uvicorn --reload` gives you.
+Target topology: **frontend on Vercel** (native Next.js build), **backend (`app.py`) on Render** (from `Dockerfile`, via the `render.yaml` Blueprint), **Postgres + pgvector on Neon**. One database now covers both the relational traceability layer and vector storage — see [Knowledge reuse](#knowledge-reuse) for why that collapsed into a single Postgres instance rather than a separate hosted vector store. `docker-compose.yml` mirrors this topology locally (a real `pgvector/pgvector:pg16` container in place of Neon) rather than the SQLite-only setup a bare `uvicorn --reload` gives you.
 
-**Live URLs:** backend → [`https://backend-production-753f.up.railway.app`](https://backend-production-753f.up.railway.app) (Railway), frontend → [`https://research-pipeline-frontend.vercel.app`](https://research-pipeline-frontend.vercel.app) (Vercel), database → Neon (Postgres+pgvector). The steps below document exactly how this was set up, so the same path reproduces it for a fork or a redeploy.
+**Live URLs:** backend → Render (`https://research-pipeline-backend.onrender.com` once the Blueprint is deployed — the backend previously ran on Railway until its free trial ended), frontend → [`https://research-pipeline-frontend.vercel.app`](https://research-pipeline-frontend.vercel.app) (Vercel), database → Neon (Postgres+pgvector). The steps below document exactly how this was set up, so the same path reproduces it for a fork or a redeploy.
 
 **Default provider.** No agent's `model_groups` chain lists `ollama_local` (see [LLM Providers](#-llm-providers)) — a deployed instance never depends on a local Ollama server that can't exist there. This needs no per-deployment configuration; it's already true of the checked-in `config/agents_config.yaml`. Keep it that way if you add a chain entry for local development.
 
@@ -362,9 +362,9 @@ Run migrations as a release/start step, not lazily on first request — a migrat
 - `DAILY_BUDGET_USD` (default `0` = uncapped) is a hard kill-switch on real LLM spend across the whole deployment: `observability/budget.py`'s `BudgetSink` records every `llm_attempt`'s real cost to a `budget_entries` table (always, regardless of whether a cap is set), and the run-starting endpoints return `503` once the day's total meets the cap. `GET /health/budget` exposes the real numbers — this is a visible wall, not a silent one.
 - **Bring-your-own-key** (`byok_provider` + `byok_api_key` on the request body) bypasses the budget check entirely and routes that one run through the caller's own key (`llm/byok.py`), rather than locking them out once the deployment's budget is spent. The frontend's left pane surfaces this automatically once `GET /health/budget` reports `exceeded: true`.
 
-**Secrets.** `.gitignore` covers `.env` and `*.db` at the repo root — verified, not assumed. Set real values (all four LLM provider keys, `SERPER_API_KEY`, Langfuse keys, `DATABASE_URL`, the budget/rate-limit settings, `CORS_ALLOWED_ORIGINS`) through Railway's own env store, never commit `.env`.
+**Secrets.** `.gitignore` covers `.env` and `*.db` at the repo root — verified, not assumed. Set real values (all four LLM provider keys, `SERPER_API_KEY`, Langfuse keys, `DATABASE_URL`, the budget/rate-limit settings, `CORS_ALLOWED_ORIGINS`) through Render's environment settings (the Blueprint prompts for every `sync: false` key in `render.yaml`), never commit `.env`.
 
-**Docker.** `Dockerfile` installs from prebuilt wheels only (verified with a real build — no compiler toolchain needed) and binds `$PORT` rather than hardcoding `8000`, since Railway injects it. It stays portable on purpose: no Nixpacks auto-detection, no Railway-specific build features beyond reading `$PORT` — the same image runs anywhere a container can, so moving off Railway later (Fly, Render, a VPS) needs no rewrite. `frontend/Dockerfile` (Next.js, 3-stage build using `output: "standalone"`) plus `docker-compose.yml` bring up both services and a real pgvector Postgres together for a reproducible local run:
+**Docker.** `Dockerfile` installs from prebuilt wheels only (verified with a real build — no compiler toolchain needed) and binds `$PORT` rather than hardcoding `8000`, since Render injects it. It stays portable on purpose: no platform-specific build features beyond reading `$PORT` — the same image ran unchanged on Railway before moving to Render, and runs anywhere else a container can (Fly, a VPS). `frontend/Dockerfile` (Next.js, 3-stage build using `output: "standalone"`) plus `docker-compose.yml` bring up both services and a real pgvector Postgres together for a reproducible local run:
 
 ```bash
 docker compose up --build
@@ -372,7 +372,16 @@ docker compose up --build
 
 This is the same code path production uses (`VECTOR_BACKEND=pgvector`, Alembic-managed schema), just against a disposable local Postgres container instead of Neon — live-verified end to end, including the specific check that matters for this migration: submit a topic, restart the **backend** container only (`docker restart <backend-container>`), resubmit the identical topic, and the response comes back `"reused": true` with the same `question_id` — the vector data survived the backend process restart because it never lived in that container to begin with.
 
-**Frontend.** Deploy `frontend/` to Vercel directly (root directory `frontend/` in Vercel's project settings) — no `vercel.json` rewrites are needed, because there's nothing to proxy: the frontend has no Next.js API routes, and every request (including the `POST /research/stream` SSE connection) already goes straight to the backend origin via `NEXT_PUBLIC_API_BASE_URL` (`frontend/lib/api.ts`), set as a Vercel build-time env var pointing at the Railway URL. This sidesteps a real footgun other Next.js deployments hit: proxying a long-lived SSE connection through a serverless rewrite hits that platform's own timeout well before a multi-minute pipeline run completes. Add the Vercel domain to the backend's `CORS_ALLOWED_ORIGINS`.
+**Backend on Render.** `render.yaml` is a [Render Blueprint](https://render.com/docs/blueprint-spec) for a single Docker web service:
+
+1. Render dashboard → **New → Blueprint** → connect this GitHub repo. Render reads `render.yaml` and creates `research-pipeline-backend` (Docker runtime, free plan, health check on `/health`).
+2. Fill in the `sync: false` values it prompts for — the same values the Railway service had: `DATABASE_URL` (Neon pooled URL), the four LLM keys, `SERPER_API_KEY`, Langfuse keys (optional), `DAILY_BUDGET_USD`, `RATE_LIMIT_PER_MINUTE`. `VECTOR_BACKEND=pgvector` and `CORS_ALLOWED_ORIGINS` are preset.
+3. Deploy. The container's `CMD` runs `alembic upgrade head` before starting uvicorn (Render's free plan has no pre-deploy command, so the start step is where it belongs). Neon already holds the schema and data from the Railway deployment, so this is a no-op and no data moves.
+4. In Vercel → project → Settings → Environment Variables, set `NEXT_PUBLIC_API_BASE_URL` to the Render URL and **redeploy** the frontend — it's a build-time variable, so changing it without a rebuild does nothing.
+
+Free-plan caveats: the service spins down after ~15 minutes idle and takes up to a minute to wake (the frontend's "waking up the backend…" gate covers this, see **Cold starts** below), and it has 512 MB RAM — if a run gets OOM-killed, the Starter plan is the next step up.
+
+**Frontend.** Deploy `frontend/` to Vercel directly (root directory `frontend/` in Vercel's project settings) — no `vercel.json` rewrites are needed, because there's nothing to proxy: the frontend has no Next.js API routes, and every request (including the `POST /research/stream` SSE connection) already goes straight to the backend origin via `NEXT_PUBLIC_API_BASE_URL` (`frontend/lib/api.ts`), set as a Vercel build-time env var pointing at the Render URL. This sidesteps a real footgun other Next.js deployments hit: proxying a long-lived SSE connection through a serverless rewrite hits that platform's own timeout well before a multi-minute pipeline run completes. Add the Vercel domain to the backend's `CORS_ALLOWED_ORIGINS`.
 
 **HF Static Space mirror — skipped.** The build plan for this migration called this out as optional and lowest-priority ("if it fights you, ship Vercel and move on"). It does: a static export (`output: 'export'`) and the Docker deployment's `output: "standalone"` are mutually exclusive Next.js build modes in the same `next.config.ts`, so shipping both would mean maintaining a second, diverging build configuration for a nice-to-have profile mirror. Skipped per that explicit permission rather than degrading either real deployment target to force it in.
 
@@ -469,7 +478,7 @@ Test count has grown alongside the production-upgrade phases (each phase's own d
 | 7 | Langfuse tracing (trace/span/generation mapping, trace URL, eval score attach) | 170 |
 | 8 | Next.js frontend, API-only backend, UTC-timestamp fix | 172 |
 | 9 | Deployment hardening (durable jobs, budget kill-switch, rate limiting, BYOK, Docker) | 197 |
-| 10 | Storage migration (Postgres + pgvector, Gemini embeddings, Alembic, Railway/Vercel/Neon deployment prep) | 221 |
+| 10 | Storage migration (Postgres + pgvector, Gemini embeddings, Alembic, Railway/Vercel/Neon deployment prep, since moved to Render) | 221 |
 
 ---
 
