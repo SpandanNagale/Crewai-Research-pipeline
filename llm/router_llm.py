@@ -207,7 +207,7 @@ class RouterLLM(BaseLLM):
                         unwrapped = unwrap_provider_exception(wrapped)
                         if unwrapped is wrapped:
                             raise
-                        raise unwrapped from wrapped
+                        raise unwrapped
                 except _TRANSIENT_EXCEPTIONS as e:
                     last_error = e
                     emit_event(
