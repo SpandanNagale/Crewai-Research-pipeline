@@ -103,10 +103,10 @@ def test_get_llm_none_raises():
 def test_research_crew_classifies_every_exception_router_llm_can_raise():
     """
     Locks in the design assumption that crew/research_crew.py needs no changes:
-    crewai's native per-provider client raises plain openai.* exceptions
-    directly (no litellm involved), and _is_provider_unavailable_error already
-    has isinstance checks covering every exception type RouterLLM.call() can
-    raise. If this ever goes False, RouterLLM's failure modes would silently
+    _is_provider_unavailable_error covers every exception type RouterLLM.call()
+    can raise -- including the builtins crewai's native client wraps some
+    openai errors in (NotFoundError -> ValueError, APIConnectionError ->
+    ConnectionError, chained via `raise ... from e`). If this ever goes False, RouterLLM's failure modes would silently
     stop being classified as provider-unavailable in the pipeline.
     """
     import httpx
@@ -123,4 +123,10 @@ def test_research_crew_classifies_every_exception_router_llm_can_raise():
             instance = exc_type("test", response=response, body=None)
         assert _is_provider_unavailable_error(instance) is True, exc_type
 
+        try:
+            raise ValueError("crewai-wrapped") from instance
+        except ValueError as wrapped:
+            assert _is_provider_unavailable_error(wrapped) is True, exc_type
+
+    assert _is_provider_unavailable_error(ValueError("unrelated")) is False
     assert _is_provider_unavailable_error(GuardrailRefusalError("refused")) is False

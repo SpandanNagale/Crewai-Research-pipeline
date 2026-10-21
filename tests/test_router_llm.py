@@ -133,6 +133,49 @@ def test_bad_request_error_is_not_treated_as_advance_worthy():
     assert d2.calls == 0  # never fell over to the next deployment
 
 
+def _crewai_wrapped(outer_type, inner):
+    """Mimic crewai's native client: `raise outer_type(msg) from inner`."""
+    try:
+        raise outer_type(f"wrapped: {inner}") from inner
+    except outer_type as e:
+        return e
+
+
+def test_crewai_wrapped_not_found_advances_to_next_deployment():
+    """
+    Regression test for a live failure: crewai's native OpenAI-compatible client
+    re-raises openai.NotFoundError (e.g. an OpenRouter free model that was pulled)
+    as a bare ValueError. RouterLLM used to let that escape on the first
+    deployment, so the Researcher never reached its groq/ollama/gemini fallbacks
+    and every sub-question ended up unresolved.
+    """
+    not_found = openai.NotFoundError("no endpoints", response=_fake_response(404), body=None)
+    d1 = FakeDeployment("a", [_crewai_wrapped(ValueError, not_found)])
+    d2 = FakeDeployment("b", ["from b"])
+    router = _router([d1, d2])
+    assert router.call("hi") == "from b"
+    assert d1.calls == 1
+
+
+def test_crewai_wrapped_connection_error_retries_then_advances():
+    conn_err = _crewai_wrapped(ConnectionError, openai.APIConnectionError(request=None))
+    d1 = FakeDeployment("a", [conn_err, conn_err])
+    d2 = FakeDeployment("b", ["from b"])
+    router = _router([d1, d2])
+    assert router.call("hi") == "from b"
+    assert d1.calls == 2
+    assert d2.calls == 1
+
+
+def test_unrelated_value_error_still_propagates():
+    d1 = FakeDeployment("a", [ValueError("genuine bug")])
+    d2 = FakeDeployment("b", ["from b"])
+    router = _router([d1, d2])
+    with pytest.raises(ValueError, match="genuine bug"):
+        router.call("hi")
+    assert d2.calls == 0
+
+
 def test_failed_deployment_cools_down_across_calls():
     rl_err = openai.RateLimitError(
         "rate limited", response=_fake_response(429), body=None
