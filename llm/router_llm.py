@@ -83,7 +83,30 @@ def _raise_if_refusal(text: str) -> None:
             raise GuardrailRefusalError(f"Deployment response looked like a refusal: {text[:200]!r}")
 
 
+def unwrap_provider_exception(e: BaseException) -> BaseException:
+    """
+    The openai.* exception underneath e, if any, else e itself.
+
+    crewai's native provider clients re-raise some openai errors as builtins
+    (see crewai.llms.providers.openai.completion): openai.NotFoundError becomes
+    ValueError and openai.APIConnectionError becomes ConnectionError, each
+    chained via `raise ... from e`. Matching on the raw exception type alone
+    misses those, so e.g. an OpenRouter deployment whose free model was pulled
+    (a 404) escaped RouterLLM.call() as a bare ValueError without ever trying
+    the next deployment.
+    """
+    seen = set()
+    current: Optional[BaseException] = e
+    while current is not None and id(current) not in seen:
+        if isinstance(current, openai.APIError):
+            return current
+        seen.add(id(current))
+        current = current.__cause__
+    return e
+
+
 def classify_provider_exception(e: Exception) -> ErrorCode:
+    e = unwrap_provider_exception(e)
     if isinstance(e, openai.AuthenticationError):
         return ErrorCode.PROVIDER_AUTH_FAILED
     if isinstance(e, openai.RateLimitError):
@@ -173,10 +196,18 @@ class RouterLLM(BaseLLM):
                 started = time.monotonic()
                 usage_before = _safe_usage(deployment)
                 try:
-                    result = deployment.call(
-                        messages, tools, callbacks, available_functions,
-                        from_task, from_agent, response_model,
-                    )
+                    try:
+                        result = deployment.call(
+                            messages, tools, callbacks, available_functions,
+                            from_task, from_agent, response_model,
+                        )
+                    except Exception as wrapped:
+                        # Re-raise the underlying openai error (if crewai wrapped
+                        # one) so the except clauses below can classify it.
+                        unwrapped = unwrap_provider_exception(wrapped)
+                        if unwrapped is wrapped:
+                            raise
+                        raise unwrapped
                 except _TRANSIENT_EXCEPTIONS as e:
                     last_error = e
                     emit_event(

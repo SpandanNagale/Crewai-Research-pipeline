@@ -16,7 +16,7 @@ from agents.writer import get_writer
 from db import repository
 from db.session import init_db
 from guardrails.input_guardrail import GuardrailBlockedError, validate_topic
-from llm.router_llm import classify_provider_exception
+from llm.router_llm import classify_provider_exception, unwrap_provider_exception
 from memory.reuse import KnowledgeReuseChecker
 from observability.context import clear_run, current_run, emit_event, set_stage, start_run
 from observability.errors import ErrorCode
@@ -80,8 +80,10 @@ def _is_provider_unavailable_error(e: Exception) -> bool:
     often-transient issues (a local model hitting its tool-call iteration cap
     and returning an empty final answer, malformed JSON, etc.) which are
     worth a retry / graceful per-item fallback instead of aborting the whole
-    pipeline run.
+    pipeline run. Looks through crewai's wrapping (ValueError/ConnectionError
+    raised from an openai error) via unwrap_provider_exception.
     """
+    e = unwrap_provider_exception(e)
     if isinstance(e, _PROVIDER_UNAVAILABLE_EXCEPTIONS):
         return True
     if isinstance(e, openai.APIStatusError):
