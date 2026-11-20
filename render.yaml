@@ -17,14 +17,12 @@ services:
         sync: false
       - key: VECTOR_BACKEND
         value: pgvector
-      # ── LLM providers (all four needed by the default model_groups) ──
+      # ── LLM providers (default model_groups; any one is enough, missing ones are skipped) ──
       - key: GROQ_API_KEY
         sync: false
       - key: OPENROUTER_API_KEY
         sync: false
       - key: GEMINI_API_KEY
-        sync: false
-      - key: OLLAMA_API_KEY
         sync: false
       # ── Search ───────────────────────────────────────────────────────
       - key: SERPER_API_KEY

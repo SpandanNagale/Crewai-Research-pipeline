@@ -65,17 +65,19 @@ classifier:
 # Routing: for each agent-name alias, an ordered list of {provider, model} deployments.
 # RouterLLM (llm/router_llm.py) tries them in order with conditional fallback. Provider
 # keys must be one of llm.provider._PROVIDERS: ollama_local, ollama_cloud, groq,
-# openrouter, gemini. Model names below are live-verified against GET /health/providers
+# openrouter, gemini. Ollama Cloud is no longer free, so it has been dropped from
+# every chain (the provider class stays available for BYOK / opt-in use). A
+# deployment whose API key is unset is skipped at build time rather than failing
+# the whole agent -- see llm/router.get_deployments(). Model names below are live-verified against GET /health/providers
 # as of Phase 1 — provider catalogs change over time, so re-verify there if a
 # deployment starts reporting status: "error".
 model_groups:
   planner:
-    - {provider: ollama_cloud, model: "gpt-oss:120b-cloud"}
     - {provider: groq, model: "openai/gpt-oss-20b"}
     - {provider: openrouter, model: "nvidia/nemotron-3-super-120b-a12b:free"}
     - {provider: gemini, model: "gemini-3.6-flash"}
   # Leads with a non-gpt-oss model, unlike every other alias below. Live-verified
-  # (Task 6): the gpt-oss family (groq and ollama_cloud both) doesn't reliably respect
+  # (Task 6): the gpt-oss family (groq and, formerly, ollama_cloud) doesn't reliably respect
   # the tool_choice=none directive crewai sends when forcing a final answer near
   # max_iter, causing "Tool choice is none, but model called a tool" 400s and
   # malformed/empty final responses specifically for this tool-calling-heavy agent.
@@ -85,30 +87,24 @@ model_groups:
   researcher:
     - {provider: openrouter, model: "nvidia/nemotron-3-super-120b-a12b:free"}
     - {provider: groq, model: "openai/gpt-oss-120b"}
-    - {provider: ollama_cloud, model: "gpt-oss:120b-cloud"}
     - {provider: gemini, model: "gemini-3.6-flash"}
   evidence_comparator:
-    - {provider: ollama_cloud, model: "gpt-oss:120b-cloud"}
     - {provider: groq, model: "openai/gpt-oss-20b"}
     - {provider: openrouter, model: "nvidia/nemotron-3-super-120b-a12b:free"}
     - {provider: gemini, model: "gemini-3.6-flash"}
   classifier:
-    - {provider: ollama_cloud, model: "gpt-oss:120b-cloud"}
     - {provider: groq, model: "openai/gpt-oss-20b"}
     - {provider: openrouter, model: "nvidia/nemotron-3-super-120b-a12b:free"}
     - {provider: gemini, model: "gemini-3.6-flash"}
   writer:
-    - {provider: ollama_cloud, model: "gpt-oss:120b-cloud"}
     - {provider: openrouter, model: "nvidia/nemotron-3-super-120b-a12b:free"}
     - {provider: gemini, model: "gemini-3.6-flash"}
     - {provider: groq, model: "openai/gpt-oss-20b"}
   critic:
-    - {provider: ollama_cloud, model: "gpt-oss:120b-cloud"}
     - {provider: openrouter, model: "nvidia/nemotron-3-super-120b-a12b:free"}
     - {provider: gemini, model: "gemini-3.6-flash"}
     - {provider: groq, model: "openai/gpt-oss-20b"}
   evaluator:
-    - {provider: ollama_cloud, model: "gpt-oss:120b-cloud"}
     - {provider: groq, model: "openai/gpt-oss-20b"}
     - {provider: openrouter, model: "nvidia/nemotron-3-super-120b-a12b:free"}
     - {provider: gemini, model: "gemini-3.6-flash"}

@@ -14,7 +14,7 @@ def test_get_deployments_returns_router_deployments_in_config_order(monkeypatch)
     router_module._deployment_cache.clear()
 
     deployments = router_module.get_deployments("researcher")
-    assert len(deployments) == 4
+    assert len(deployments) == 3
     # researcher leads with openrouter (native provider), then groq (goes through
     # crewai's openai-compatible client) — see config/agents_config.yaml's comment
     # on the researcher entry for why non-gpt-oss leads this specific chain.
@@ -120,3 +120,28 @@ def test_find_model_for_provider_returns_none_for_unconfigured_provider():
     import llm.router as router_module
 
     assert router_module.find_model_for_provider("not-a-real-provider") is None
+
+
+def test_get_deployments_skips_providers_without_keys(monkeypatch):
+    # Only Gemini configured: the agent must still get a working chain made of
+    # just that provider, with aliases kept index-aligned.
+    monkeypatch.setattr("llm.provider.settings.GROQ_API_KEY", "")
+    monkeypatch.setattr("llm.provider.settings.OLLAMA_API_KEY", "")
+    monkeypatch.setattr("llm.provider.settings.OPENROUTER_API_KEY", "")
+    monkeypatch.setattr("llm.provider.settings.GEMINI_API_KEY", "gemini-test")
+    import llm.router as router_module
+    router_module._deployment_cache.clear()
+    router_module._alias_cache.clear()
+
+    deployments = router_module.get_deployments("researcher")
+    aliases = router_module.get_deployment_aliases("researcher")
+    assert aliases == ["gemini"]
+    assert len(deployments) == 1
+
+
+def test_default_model_groups_do_not_use_paid_ollama_cloud():
+    import llm.router as router_module
+
+    config = router_module._load_config()
+    for group in config["model_groups"].values():
+        assert all(e["provider"] != "ollama_cloud" for e in group)

@@ -115,6 +115,19 @@ def test_unrecognized_status_error_advances_immediately_without_retry():
     assert d1.calls == 1  # no retry on the same deployment
 
 
+def test_payment_required_advances_to_next_deployment():
+    """A provider that went paid / ran out of credits (HTTP 402, e.g. Ollama
+    Cloud) must fall through to the next deployment instead of failing the stage."""
+    status_err = openai.APIStatusError(
+        "payment required", response=_fake_response(402), body=None
+    )
+    d1 = FakeDeployment("a", [status_err])
+    d2 = FakeDeployment("b", ["from b"])
+    router = _router([d1, d2])
+    assert router.call("hi") == "from b"
+    assert d1.calls == 1
+
+
 def test_bad_request_error_is_not_treated_as_advance_worthy():
     """
     A deterministic client-request error (400) already has its own specific

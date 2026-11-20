@@ -44,7 +44,7 @@ def test_get_llm_ignores_byok_override_once_cleared(monkeypatch):
     clear_byok()
 
     llm = get_llm("researcher")
-    assert len(llm.deployments) == 4  # back to the normal model_groups path
+    assert len(llm.deployments) == 3  # back to the normal model_groups path
 
 
 def test_get_llm_returns_router_llm_for_known_alias(monkeypatch):
@@ -57,7 +57,7 @@ def test_get_llm_returns_router_llm_for_known_alias(monkeypatch):
 
     llm = get_llm("researcher")
     assert isinstance(llm, RouterLLM)
-    assert len(llm.deployments) == 4
+    assert len(llm.deployments) == 3
 
 
 def test_get_llm_result_exposes_full_duck_typed_contract_crewai_probes(monkeypatch):

@@ -54,7 +54,9 @@ _IMMEDIATE_ADVANCE_EXCEPTIONS = (
 # (400 BadRequestError, 409 ConflictError, 422 UnprocessableEntityError) — retrying a
 # different deployment won't fix a malformed request, so those propagate uncaught and
 # fail the stage instead of cycling through every deployment for an identical error.
-_GENERIC_STATUS_ERROR_ADVANCE_CODES = frozenset({408, 413, 503, 529})
+# 402 Payment Required: a provider that has moved behind a paywall / run out of
+# credits (e.g. Ollama Cloud) -- another deployment can still serve the call.
+_GENERIC_STATUS_ERROR_ADVANCE_CODES = frozenset({402, 408, 413, 503, 529})
 
 _REFUSAL_PHRASES = (
     "i cannot assist",
