@@ -1,6 +1,6 @@
 # Research Pipeline
 
-A multi-agent research pipeline built on **CrewAI** and pluggable Large Language Models (local **Ollama** by default — zero cost, no API key — with optional **Ollama Cloud**, **Groq**, **OpenRouter**, and **Gemini** backends). Six specialized agents plan, research, cross-check, classify, write, and critique a report on any topic; every finding, source, contradiction, conclusion, and pipeline-run event is persisted so the whole reasoning chain is traceable, resumable, and reusable.
+A multi-agent research pipeline built on **CrewAI** and pluggable Large Language Models (local **Ollama** by default — zero cost, no API key — with **Groq**, **OpenRouter**, and **Gemini** as the default cloud backends; **Ollama Cloud** is now paid and only used if you opt in). Six specialized agents plan, research, cross-check, classify, write, and critique a report on any topic; every finding, source, contradiction, conclusion, and pipeline-run event is persisted so the whole reasoning chain is traceable, resumable, and reusable.
 
 Three interfaces over one backend:
 
@@ -291,18 +291,17 @@ Every agent gets its LLM from `llm/provider.py::get_llm(agent_name)`, which buil
 ```yaml
 model_groups:
   planner:
-    - {provider: ollama_cloud, model: gpt-oss:120b-cloud}
     - {provider: groq, model: openai/gpt-oss-20b}
     - {provider: openrouter, model: nvidia/nemotron-3-super-120b-a12b:free}
     - {provider: gemini, model: gemini-3.6-flash}
 ```
 
-A call tries each deployment in order, advancing on a transient failure (timeout, rate limit, auth error) and returning the first success — see `llm/router_llm.py::RouterLLM.call()`. `GET /health/providers` pings every configured deployment for every agent, live.
+A call tries each deployment in order, advancing on a transient failure (timeout, rate limit, auth error, 402 payment required) and returning the first success — see `llm/router_llm.py::RouterLLM.call()`. `GET /health/providers` pings every configured deployment for every agent, live.
 
 | Provider | Cost | Where to get a key |
 | :--- | :--- | :--- |
 | `ollama_local` | Free | — (`OLLAMA_BASE_URL`, default `localhost:11434`) |
-| `ollama_cloud` | Free/paid tiers | `ollama signin` at [ollama.com](https://ollama.com), set `OLLAMA_API_KEY` |
+| `ollama_cloud` | Paid (removed from default `model_groups`) | `ollama signin` at [ollama.com](https://ollama.com), set `OLLAMA_API_KEY` |
 | `groq` | Free tier, then paid | [console.groq.com/keys](https://console.groq.com/keys) |
 | `openrouter` | Varies by model (some free) | [openrouter.ai/keys](https://openrouter.ai/keys) |
 | `gemini` | Free tier, then paid | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
@@ -362,7 +361,7 @@ Run migrations as a release/start step, not lazily on first request — a migrat
 - `DAILY_BUDGET_USD` (default `0` = uncapped) is a hard kill-switch on real LLM spend across the whole deployment: `observability/budget.py`'s `BudgetSink` records every `llm_attempt`'s real cost to a `budget_entries` table (always, regardless of whether a cap is set), and the run-starting endpoints return `503` once the day's total meets the cap. `GET /health/budget` exposes the real numbers — this is a visible wall, not a silent one.
 - **Bring-your-own-key** (`byok_provider` + `byok_api_key` on the request body) bypasses the budget check entirely and routes that one run through the caller's own key (`llm/byok.py`), rather than locking them out once the deployment's budget is spent. The frontend's left pane surfaces this automatically once `GET /health/budget` reports `exceeded: true`.
 
-**Secrets.** `.gitignore` covers `.env` and `*.db` at the repo root — verified, not assumed. Set real values (all four LLM provider keys, `SERPER_API_KEY`, Langfuse keys, `DATABASE_URL`, the budget/rate-limit settings, `CORS_ALLOWED_ORIGINS`) through Render's environment settings (the Blueprint prompts for every `sync: false` key in `render.yaml`), never commit `.env`.
+**Secrets.** `.gitignore` covers `.env` and `*.db` at the repo root — verified, not assumed. Set real values (the Groq / OpenRouter / Gemini keys — any missing one is skipped, `SERPER_API_KEY`, Langfuse keys, `DATABASE_URL`, the budget/rate-limit settings, `CORS_ALLOWED_ORIGINS`) through Render's environment settings (the Blueprint prompts for every `sync: false` key in `render.yaml`), never commit `.env`.
 
 **Docker.** `Dockerfile` installs from prebuilt wheels only (verified with a real build — no compiler toolchain needed) and binds `$PORT` rather than hardcoding `8000`, since Render injects it. It stays portable on purpose: no platform-specific build features beyond reading `$PORT` — the same image ran unchanged on Railway before moving to Render, and runs anywhere else a container can (Fly, a VPS). `frontend/Dockerfile` (Next.js, 3-stage build using `output: "standalone"`) plus `docker-compose.yml` bring up both services and a real pgvector Postgres together for a reproducible local run:
 
@@ -424,7 +423,7 @@ python -m eval.harness --base-url http://127.0.0.1:8000
 
 This writes `eval/results.json` and `eval/results.md`. Only the `adversarial` and `contradiction_fixture` categories are pass/fail and gate the exit code (1 on any failure) — `easy`/`ambiguous`/`low_resource` are statistical (mean groundedness, citation precision, sub-question coverage, cache hit rate, fallback rate, cost per run, p50/p95 stage latency) and are **reported, not gated**, since there is no verified historical baseline yet to regress against; gating on a threshold with no real prior data would just be a fabricated number.
 
-**CI** (`.github/workflows/eval.yml`) runs the harness on every push to `main` — there's no live deployment yet (see [Deployment](#-deployment)), so the workflow starts the FastAPI app inside the runner itself. `config/agents_config.yaml`'s per-agent provider list is built eagerly in full (`llm/router.py::get_deployments`), so all four cloud provider keys must be set as repo secrets — `OLLAMA_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY` — for the run to happen at all; `SEARCH_PROVIDER` is pinned to the free, keyless DuckDuckGo backend so a fifth key isn't required. If those secrets aren't configured, the job skips the live run with a warning rather than failing the build.
+**CI** (`.github/workflows/eval.yml`) runs the harness on every push to `main` — there's no live deployment yet (see [Deployment](#-deployment)), so the workflow starts the FastAPI app inside the runner itself. `config/agents_config.yaml`'s per-agent provider list skips any provider whose key is unset (`llm/router.py::get_deployments`), so at least one of `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY` must be set as a repo secret for the run to happen; `SEARCH_PROVIDER` is pinned to the free, keyless DuckDuckGo backend so a fifth key isn't required. If those secrets aren't configured, the job skips the live run with a warning rather than failing the build.
 
 ### Statistics
 
